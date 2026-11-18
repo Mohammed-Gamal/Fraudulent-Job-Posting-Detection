@@ -16,8 +16,7 @@ dependencies = [
     "seaborn>=0.13",
     "nltk>=3.8",
     "imbalanced-learn>=0.12",
-    "beautifulsoup4>=4.12",
-    "lxml>=5.0",
+    "pyarrow>=16.0",
     "joblib>=1.4",
     "tabulate>=0.9",
 ]

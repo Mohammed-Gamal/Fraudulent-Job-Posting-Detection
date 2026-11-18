@@ -1,0 +1,151 @@
+"""Stage 2: text normalisation.
+
+Design notes
+------------
+No HTML tag stripping: an audit of the Kaggle CSV found 0% of descriptions
+contain tags, though 22% carry HTML entities, so only unescaping is needed.
+
+Redaction placeholders are *normalised, not removed*. EMSCAD masks contact
+details as '#EMAIL_<sha256>#'. The hash is a per-entity identifier -- keeping
+it lets a model memorise individual scammers. But the mere presence of a
+contact address is genuine signal (it appears in 20.1% of fraudulent postings
+against 6.8% of legitimate ones), so each family collapses to a single token.
+"""
+
+from __future__ import annotations
+
+import html
+import logging
+import re
+import unicodedata
+
+import pandas as pd
+from nltk.stem import PorterStemmer
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+
+from . import config
+
+logger = logging.getLogger(__name__)
+
+# Canonical replacements for the three redaction families found in the data.
+# Letters only, so they survive tokenisation and remain readable in feature
+# importance plots.
+PLACEHOLDERS: dict[str, str] = {
+    "URL": "urlref",
+    "EMAIL": "emailref",
+    "PHONE": "phoneref",
+}
+PLACEHOLDER_VALUES = frozenset(PLACEHOLDERS.values())
+
+_REDACTION_RE = re.compile(r"#([A-Za-z]+)_([0-9a-f]+)#")
+_NON_LETTER_RE = re.compile(r"[^a-z]+")
+
+_STEMMER = PorterStemmer()
+_STEM_CACHE: dict[str, str] = {}
+
+MIN_TOKEN_LENGTH = 2
+
+
+def _stem(token: str) -> str:
+    """Porter stem with memoisation; the corpus repeats tokens heavily."""
+    cached = _STEM_CACHE.get(token)
+    if cached is None:
+        cached = _STEMMER.stem(token)
+        _STEM_CACHE[token] = cached
+    return cached
+
+
+def normalise_redactions(text: str) -> str:
+    """Collapse '#EMAIL_<hash>#' to 'emailref', preserving presence, dropping identity."""
+    def repl(match: re.Match[str]) -> str:
+        family = match.group(1).upper()
+        return f" {PLACEHOLDERS.get(family, 'redactedref')} "
+
+    return _REDACTION_RE.sub(repl, text)
+
+
+def clean_text(text: str) -> str:
+    """Full normalisation of one document: entities, redactions, case, accents, symbols."""
+    if not text:
+        return ""
+    text = html.unescape(text)
+    text = normalise_redactions(text)
+    text = text.lower()
+    # Fold accented characters to ASCII; 78% of descriptions contain non-ASCII
+    # characters, mostly typographic quotes, dashes and bullets.
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii")
+    return _NON_LETTER_RE.sub(" ", text).strip()
+
+
+def tokenise(text: str, remove_stopwords: bool = True, stem: bool = True) -> list[str]:
+    """Split cleaned text into tokens, optionally filtering and stemming.
+
+    Placeholder tokens bypass stopword removal and stemming so they stay
+    intact and identifiable.
+    """
+    tokens: list[str] = []
+    for token in text.split():
+        if token in PLACEHOLDER_VALUES:
+            tokens.append(token)
+            continue
+        if len(token) < MIN_TOKEN_LENGTH:
+            continue
+        if remove_stopwords and token in ENGLISH_STOP_WORDS:
+            continue
+        tokens.append(_stem(token) if stem else token)
+    return tokens
+
+
+def preprocess_document(text: str, **kwargs: bool) -> str:
+    return " ".join(tokenise(clean_text(text), **kwargs))
+
+
+def build_corpus(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add cleaned text columns plus structural features to a copy of `frame`.
+
+    Returns a new frame with:
+      - 'text_all'      every text field concatenated, cleaned and stemmed
+      - missing-value indicators, which Stage 1 showed are predictive
+        (company_profile is absent in 67.8% of fraudulent postings)
+    """
+    result = frame.copy()
+
+    # Clean each field, concatenate into one document, then discard the
+    # per-field copies: storing all five again would quintuple the file for
+    # no modelling benefit. Per-field experiments can call build_corpus again.
+    cleaned = {}
+    for field in config.TEXT_FIELDS:
+        cleaned[field] = result[field].fillna("").astype(str).map(preprocess_document)
+        result[f"{field}_is_missing"] = frame[field].isna().astype("int8")
+
+    result["text_all"] = (
+        pd.DataFrame(cleaned)
+        .agg(" ".join, axis=1)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
+
+    for field in config.CATEGORICAL_FIELDS:
+        result[f"{field}_is_missing"] = frame[field].isna().astype("int8")
+
+    result["n_tokens"] = result["text_all"].str.split().str.len()
+    logger.info(
+        "Built corpus: median %s tokens per posting, vocabulary cache %s stems",
+        int(result["n_tokens"].median()), f"{len(_STEM_CACHE):,}",
+    )
+    return result
+
+
+def run_preprocess() -> pd.DataFrame:
+    """Build and persist the cleaned corpus."""
+    from .data import load_raw
+
+    config.ensure_directories()
+    frame = load_raw()
+    processed = build_corpus(frame)
+
+    out = config.PROCESSED_DIR / "corpus.parquet"
+    processed.to_parquet(out, index=False)
+    logger.info("corpus -> %s", out.relative_to(config.PROJECT_ROOT))
+    return processed

@@ -28,6 +28,8 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("check", help="verify the raw dataset is present and valid")
     subparsers.add_parser("explore", help="stage 1: exploratory data analysis")
+    subparsers.add_parser("preprocess", help="stage 2: clean text and persist the corpus")
+    subparsers.add_parser("split", help="stage 2: build and audit the leakage-controlled split")
 
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)
@@ -48,6 +50,27 @@ def main(argv: list[str] | None = None) -> int:
         from .explore import run_eda
 
         run_eda()
+        return 0
+
+    if args.command == "preprocess":
+        from .preprocess import run_preprocess
+
+        run_preprocess()
+        return 0
+
+    if args.command == "split":
+        import pandas as pd
+
+        from . import config
+        from .splits import audit_split, train_test_indices
+
+        corpus = config.PROCESSED_DIR / "corpus.parquet"
+        if not corpus.exists():
+            print("Run 'fjpd preprocess' first.", file=sys.stderr)
+            return 1
+        frame = pd.read_parquet(corpus)
+        train_idx, test_idx = train_test_indices(frame)
+        print(audit_split(frame, train_idx, test_idx).to_string(index=False))
         return 0
 
     return 0
