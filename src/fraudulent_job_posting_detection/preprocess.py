@@ -64,12 +64,13 @@ def normalise_redactions(text: str) -> str:
     return _REDACTION_RE.sub(repl, text)
 
 
-def clean_text(text: str) -> str:
+def clean_text(text: str, normalise_placeholders: bool = True) -> str:
     """Full normalisation of one document: entities, redactions, case, accents, symbols."""
     if not text:
         return ""
     text = html.unescape(text)
-    text = normalise_redactions(text)
+    if normalise_placeholders:
+        text = normalise_redactions(text)
     text = text.lower()
     # Fold accented characters to ASCII; 78% of descriptions contain non-ASCII
     # characters, mostly typographic quotes, dashes and bullets.
@@ -97,11 +98,18 @@ def tokenise(text: str, remove_stopwords: bool = True, stem: bool = True) -> lis
     return tokens
 
 
-def preprocess_document(text: str, **kwargs: bool) -> str:
-    return " ".join(tokenise(clean_text(text), **kwargs))
+def preprocess_document(
+    text: str,
+    remove_stopwords: bool = True,
+    stem: bool = True,
+    normalise_placeholders: bool = True,
+) -> str:
+    """Clean and tokenise one document; the three switches are exposed in the GUI."""
+    cleaned = clean_text(text, normalise_placeholders=normalise_placeholders)
+    return " ".join(tokenise(cleaned, remove_stopwords=remove_stopwords, stem=stem))
 
 
-def build_corpus(frame: pd.DataFrame) -> pd.DataFrame:
+def build_corpus(frame: pd.DataFrame, **options: bool) -> pd.DataFrame:
     """Add cleaned text columns plus structural features to a copy of `frame`.
 
     Returns a new frame with:
@@ -116,7 +124,10 @@ def build_corpus(frame: pd.DataFrame) -> pd.DataFrame:
     # no modelling benefit. Per-field experiments can call build_corpus again.
     cleaned = {}
     for field in config.TEXT_FIELDS:
-        cleaned[field] = result[field].fillna("").astype(str).map(preprocess_document)
+        cleaned[field] = (
+            result[field].fillna("").astype(str)
+            .map(lambda text: preprocess_document(text, **options))
+        )
         result[f"{field}_is_missing"] = frame[field].isna().astype("int8")
 
     result["text_all"] = (
@@ -137,13 +148,13 @@ def build_corpus(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def run_preprocess() -> pd.DataFrame:
+def run_preprocess(**options: bool) -> pd.DataFrame:
     """Build and persist the cleaned corpus."""
     from .data import load_raw
 
     config.ensure_directories()
     frame = load_raw()
-    processed = build_corpus(frame)
+    processed = build_corpus(frame, **options)
 
     out = config.PROCESSED_DIR / "corpus.parquet"
     processed.to_parquet(out, index=False)

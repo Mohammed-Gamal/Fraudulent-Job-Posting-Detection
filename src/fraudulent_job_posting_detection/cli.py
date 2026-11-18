@@ -36,6 +36,10 @@ def main(argv: list[str] | None = None) -> int:
     compare_parser.add_argument("--only", help="run a single model by name")
     subparsers.add_parser("imbalance", help="stage 4b: compare imbalance strategies")
     subparsers.add_parser("evaluate", help="stage 5: held-out evaluation and interpretability")
+    serve_parser = subparsers.add_parser("serve", help="launch the web interface")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=5000)
+    serve_parser.add_argument("--debug", action="store_true")
 
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)
@@ -68,6 +72,14 @@ def main(argv: list[str] | None = None) -> int:
         from .models import run_imbalance_comparison
 
         print(run_imbalance_comparison().to_string(index=False))
+        return 0
+
+    if args.command == "serve":
+        from .webapp.app import create_app
+
+        app = create_app()
+        print(f"\n  Fraud detection UI -> http://{args.host}:{args.port}\n")
+        app.run(host=args.host, port=args.port, debug=args.debug)
         return 0
 
     if args.command == "evaluate":

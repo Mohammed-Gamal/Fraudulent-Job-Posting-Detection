@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "_table.html" import render as table %}
+{% block title %}Import{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>Import the dataset</h2>
+  {% if summary %}
+    <p class="status ok">Dataset loaded and validated.</p>
+    <div class="stats">
+      <div><strong>{{ "{:,}".format(summary.rows) }}</strong><span>postings</span></div>
+      <div><strong>{{ summary.columns }}</strong><span>columns</span></div>
+      <div><strong>{{ summary.fraud_pct }}%</strong><span>fraudulent</span></div>
+    </div>
+    <table>
+      <thead><tr><th>Class</th><th>Count</th><th>Share</th></tr></thead>
+      <tbody>
+        {% for row in summary.balance %}
+          <tr><td>{{ row.label }}</td><td>{{ "{:,}".format(row['count']) }}</td>
+              <td>{{ row.percent }}%</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted">
+      Only 1 posting in 20 is fraudulent, so accuracy is misleading: always
+      predicting “legitimate” already scores {{ summary.balance[0].percent }}%.
+      Later stages rank models by F1 on the fraudulent class instead.
+    </p>
+    <p><a class="button" href="{{ url_for('explore') }}">Continue to Explore →</a></p>
+  {% else %}
+    <p class="status missing">No valid dataset found.</p>
+    <p>Expected at <code>{{ raw_path }}</code></p>
+    <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+      <label>Upload <code>fake_job_postings.csv</code></label>
+      <input type="file" name="csv" accept=".csv" required>
+      <button type="submit">Upload and validate</button>
+    </form>
+    <p class="muted">
+      Download it from the
+      <a href="https://www.kaggle.com/datasets/shivamb/real-or-fake-fake-jobposting-prediction"
+         target="_blank" rel="noopener">Kaggle mirror of EMSCAD</a>,
+      or copy it into <code>data/raw/</code> directly.
+    </p>
+  {% endif %}
+</section>
+{% endblock %}

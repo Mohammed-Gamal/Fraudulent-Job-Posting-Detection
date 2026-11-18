@@ -281,3 +281,91 @@ def run_imbalance_comparison() -> pd.DataFrame:
     table = pd.DataFrame(rows)
     save_table(table, "imbalance_comparison")
     return table
+
+
+# ---------------------------------------------------------------------------
+# Single-split training, used by the web interface
+# ---------------------------------------------------------------------------
+ALL_METRICS: dict[str, str] = {
+    "accuracy": "Accuracy",
+    "precision_fraud": "Precision (fraud)",
+    "recall_fraud": "Recall (fraud)",
+    "f1_fraud": "F1 (fraud)",
+    "avg_precision": "Average precision",
+    "roc_auc": "ROC AUC",
+}
+
+IMBALANCE_STRATEGIES: tuple[str, ...] = ("none", "class_weight", "smote")
+
+
+def _wrap_strategy(estimator: object, strategy: str) -> object:
+    """Attach the chosen imbalance treatment around a bare estimator."""
+    features = build_features()
+    if strategy == "smote":
+        from imblearn.over_sampling import SMOTE
+        from imblearn.pipeline import Pipeline as ImbPipeline
+
+        return ImbPipeline([
+            ("features", features),
+            ("smote", SMOTE(random_state=config.RANDOM_STATE)),
+            ("clf", estimator),
+        ])
+    return Pipeline([("features", features), ("clf", estimator)])
+
+
+def train_and_evaluate(
+    frame: pd.DataFrame,
+    model_names: list[str],
+    strategy: str = "class_weight",
+    progress: object = None,
+) -> pd.DataFrame:
+    """Fit each selected model on the training split and score it on the test split.
+
+    A single split rather than cross-validation: the GUI needs to stay
+    responsive, and one grouped split is enough to rank models. Use
+    `fjpd compare` for the cross-validated numbers that belong in a report.
+
+    `progress` is an optional callable taking (done, total, label).
+    """
+    from sklearn.metrics import (
+        accuracy_score, average_precision_score, f1_score,
+        precision_score, recall_score, roc_auc_score,
+    )
+
+    from .splits import train_test_indices
+
+    train_idx, test_idx = train_test_indices(frame)
+    train, test = frame.iloc[train_idx], frame.iloc[test_idx]
+    y_train = train[config.TARGET].to_numpy()
+    y_test = test[config.TARGET].to_numpy()
+
+    available = candidate_models(balanced=(strategy == "class_weight"))
+    rows: list[dict[str, object]] = []
+
+    for position, name in enumerate(model_names, start=1):
+        if progress is not None:
+            progress(position - 1, len(model_names), f"training {name}")
+        estimator = available[name]
+        pipeline = _wrap_strategy(estimator, strategy)
+        pipeline.fit(train, y_train)
+
+        predictions = pipeline.predict(test)
+        if hasattr(pipeline, "decision_function"):
+            scores = pipeline.decision_function(test)
+        else:
+            scores = pipeline.predict_proba(test)[:, 1]
+
+        rows.append({
+            "model": name,
+            "accuracy": round(float(accuracy_score(y_test, predictions)), 4),
+            "precision_fraud": round(float(precision_score(y_test, predictions, zero_division=0)), 4),
+            "recall_fraud": round(float(recall_score(y_test, predictions, zero_division=0)), 4),
+            "f1_fraud": round(float(f1_score(y_test, predictions, zero_division=0)), 4),
+            "avg_precision": round(float(average_precision_score(y_test, scores)), 4),
+            "roc_auc": round(float(roc_auc_score(y_test, scores)), 4),
+        })
+        logger.info("%s trained: F1=%.4f", name, rows[-1]["f1_fraud"])
+
+    if progress is not None:
+        progress(len(model_names), len(model_names), "done")
+    return pd.DataFrame(rows)

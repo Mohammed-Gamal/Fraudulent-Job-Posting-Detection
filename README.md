@@ -67,7 +67,13 @@ reports/
 src/fraudulent_job_posting_detection/
   config.py     paths, dataset schema, experiment constants
   data.py       loading and integrity validation
+  explore.py    stage 1: exploratory analysis
+  preprocess.py stage 2: text normalisation
+  splits.py     stage 2: leakage-controlled splitting
+  models.py     stages 3-4: features, model comparison
+  evaluate.py   stage 5: held-out evaluation
   cli.py        pipeline entry point
+  webapp/       Flask interface (app.py, jobs.py, templates/, static/)
 ```
 
 ## Pipeline
@@ -84,6 +90,31 @@ uv run fjpd compare      # stage 4: cross-validate candidate models (resumable)
 uv run fjpd imbalance    # stage 4b: compare imbalance strategies
 uv run fjpd evaluate     # stage 5: held-out evaluation and interpretability
 ```
+
+## Web interface
+
+```bash
+uv sync
+uv run fjpd serve      # then open http://127.0.0.1:5000
+```
+
+Four pages, one per stage:
+
+| Page | Does |
+| --- | --- |
+| Import | Upload `fake_job_postings.csv`, validate it, show the class balance |
+| Explore | Raw preview, missingness, fraud rate by flag, generated figures |
+| Clean | Toggle placeholder normalisation / stopwords / stemming, build the corpus, audit the split |
+| Train | Pick models, metrics and imbalance strategy; ranked results and a top-3 podium |
+
+Long actions (cleaning ~30s, training ~15s per model) run on a worker thread
+while the page polls `/job/<name>`, so no HTTP request is held open. The job
+registry is an in-memory dict: this is a single-user local tool, not a
+multi-worker deployment.
+
+The interface calls the same functions as the CLI, so results agree. It uses
+one grouped train/test split for responsiveness; `fjpd compare` runs the
+5-fold cross-validation whose numbers belong in the report.
 
 ## Key findings
 

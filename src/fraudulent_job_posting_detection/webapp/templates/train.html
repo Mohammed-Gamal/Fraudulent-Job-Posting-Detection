@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% from "_progress.html" import progress %}
+{% block title %}Train{% endblock %}
+{% block content %}
+{% if not corpus_ready %}
+  <section class="card">
+    <p class="status missing">No cleaned corpus yet.</p>
+    <p><a class="button" href="{{ url_for('clean') }}">Go to Clean →</a></p>
+  </section>
+{% else %}
+<section class="card">
+  <h2>Train and compare</h2>
+  {{ progress(job, 'train') }}
+  {% if job.status != 'running' %}
+  <form method="post" action="{{ url_for('train_run') }}">
+    <div class="columns">
+      <div>
+        <h3>Models</h3>
+        {% for name in models %}
+          <label class="inline">
+            <input type="checkbox" name="models" value="{{ name }}" checked> {{ name }}
+          </label>
+        {% endfor %}
+      </div>
+      <div>
+        <h3>Metrics to display</h3>
+        {% for key, label in all_metrics.items() %}
+          <label class="inline">
+            <input type="checkbox" name="metrics" value="{{ key }}" checked> {{ label }}
+          </label>
+        {% endfor %}
+      </div>
+      <div>
+        <h3>Class imbalance</h3>
+        {% for option in strategies %}
+          <label class="inline">
+            <input type="radio" name="strategy" value="{{ option }}"
+                   {{ 'checked' if option == 'class_weight' }}> {{ option }}
+          </label>
+        {% endfor %}
+        <h3>Rank by</h3>
+        <select name="rank_by">
+          {% for key, label in all_metrics.items() %}
+            <option value="{{ key }}" {{ 'selected' if key == 'f1_fraud' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <button type="submit">Train selected models</button>
+    <span class="muted">Roughly 10–20 seconds per model.</span>
+  </form>
+  {% endif %}
+</section>
+
+{% if results %}
+  <section class="card">
+    <h2>Top 3 models</h2>
+    <p class="muted">
+      Ranked by {{ all_metrics[results.rank_by] }}, imbalance strategy
+      <code>{{ results.strategy }}</code>, scored on the held-out test split.
+    </p>
+    <ol class="podium">
+      {% for row in results.podium %}
+        <li class="rank-{{ loop.index }}">
+          <span class="medal">{{ loop.index }}</span>
+          <strong>{{ row.model }}</strong>
+          <em>{{ all_metrics[results.rank_by] }}: {{ row[results.rank_by] }}</em>
+        </li>
+      {% endfor %}
+    </ol>
+  </section>
+
+  <section class="card">
+    <h2>All results</h2>
+    <table>
+      <thead>
+        <tr><th>Model</th>
+          {% for key in results.metrics %}<th>{{ all_metrics[key] }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in results.rows %}
+          <tr class="{{ 'best' if loop.first }}">
+            <td>{{ row.model }}</td>
+            {% for key in results.metrics %}<td>{{ row[key] }}</td>{% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted">
+      Single grouped split for responsiveness. For the cross-validated figures
+      that belong in a report, run <code>uv run fjpd compare</code>.
+    </p>
+  </section>
+{% endif %}
+{% endif %}
+{% endblock %}
