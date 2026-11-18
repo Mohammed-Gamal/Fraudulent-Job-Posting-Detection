@@ -106,7 +106,7 @@ def preprocess_document(
     stem: bool = True,
     normalise_placeholders: bool = True,
 ) -> str:
-    """Clean and tokenise one document; the three switches are exposed in the GUI."""
+    """Clean and tokenize one document; the three switches are exposed in the GUI."""
     cleaned = clean_text(text, normalise_placeholders=normalise_placeholders)
     return " ".join(tokenise(cleaned, remove_stopwords=remove_stopwords, stem=stem))
 

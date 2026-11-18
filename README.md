@@ -43,13 +43,13 @@ accuracy while catching nothing, so accuracy is reported only for contrast and
 **EMSCAD** (Employment Scam Aegean Dataset), Laboratory of Information &
 Communication Systems Security, University of the Aegean.
 
-| Property | Value |
-| --- | --- |
-| Postings | 17,880 |
-| Fraudulent | 866 (4.84%) |
+| Property   | Value           |
+| ---------- | --------------- |
+| Postings   | 17,880          |
+| Fraudulent | 866 (4.84%)     |
 | Legitimate | 17,014 (95.16%) |
-| Columns | 18 |
-| Period | 2012–2014 |
+| Columns    | 18              |
+| Period     | 2012–2014       |
 
 Free-text fields: `title`, `company_profile`, `description`, `requirements`,
 `benefits`. Structured fields include `telecommuting`, `has_company_logo`,
@@ -122,16 +122,16 @@ or a column name, so a renamed field is a one-file change.
 
 ## Command-line pipeline
 
-| Command | Stage | Produces |
-| --- | --- | --- |
-| `fjpd check` | — | Validates the raw CSV, prints the class balance |
-| `fjpd explore` | 1 | Missingness, text lengths, fraud rates, distinguishing terms, 3 figures |
-| `fjpd preprocess` | 2 | `corpus.parquet` + `corpus_meta.json` |
-| `fjpd split` | 2 | Audits the grouped train/test split |
-| `fjpd compare` | 3–4 | 5-fold grouped CV of four models (resumable; `--only NAME`) |
-| `fjpd imbalance` | 4b | No treatment vs class weighting vs SMOTE |
-| `fjpd evaluate` | 5 | Held-out metrics, threshold tuning, coefficients, 4 figures |
-| `fjpd serve` | — | The web interface |
+| Command           | Stage | Produces                                                                |
+| ----------------- | ----- | ----------------------------------------------------------------------- |
+| `fjpd check`      | —     | Validates the raw CSV, prints the class balance                         |
+| `fjpd explore`    | 1     | Missingness, text lengths, fraud rates, distinguishing terms, 3 figures |
+| `fjpd preprocess` | 2     | `corpus.parquet` + `corpus_meta.json`                                   |
+| `fjpd split`      | 2     | Audits the grouped train/test split                                     |
+| `fjpd compare`    | 3–4   | 5-fold grouped CV of four models (resumable; `--only NAME`)             |
+| `fjpd imbalance`  | 4b    | No treatment vs class weighting vs SMOTE                                |
+| `fjpd evaluate`   | 5     | Held-out metrics, threshold tuning, coefficients, 4 figures             |
+| `fjpd serve`      | —     | The web interface                                                       |
 
 Tables are written to `reports/tables/` as both CSV and Markdown, so figures
 and numbers can be pasted straight into a report.
@@ -144,13 +144,13 @@ uv run fjpd serve
 
 Five pages. Each owns one stage and shows only that stage's output.
 
-| Page | Does |
-| --- | --- |
-| **1 · Import** | Upload the CSV, validate it, show the class balance |
-| **2 · Explore** | Raw preview, missingness, fraud rate by flag, stage-1 figures |
-| **3 · Clean** | Toggle normalisation / stopwords / stemming, build the corpus, show what built it |
-| **4 · Train** | The grouped split, model and metric selection, ranked results, top-3 podium, diagnostics |
-| **5 · Predict** | Paste an advert, score it, see the terms that drove the decision |
+| Page            | Does                                                                                     |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| **1 · Import**  | Upload the CSV, validate it, show the class balance                                      |
+| **2 · Explore** | Raw preview, missingness, fraud rate by flag, stage-1 figures                            |
+| **3 · Clean**   | Toggle normalisation / stopwords / stemming, build the corpus, show what built it        |
+| **4 · Train**   | The grouped split, model and metric selection, ranked results, top-3 podium, diagnostics |
+| **5 · Predict** | Paste an advert, score it, see the terms that drove the decision                         |
 
 Three design notes:
 
@@ -192,13 +192,13 @@ tokenisation as unique per-entity terms, and a naive log-odds analysis ranks
 them among the strongest "fraud indicators" — pure memorisation of individual
 scammers.
 
-But their *presence* is real signal:
+But their _presence_ is real signal:
 
 | Placeholder | In fraudulent | In legitimate |
-| --- | --- | --- |
-| `#EMAIL_` | 20.09% | 6.82% |
-| `#PHONE_` | 9.12% | 2.63% |
-| `#URL_` | 30.83% | 31.47% |
+| ----------- | ------------- | ------------- |
+| `#EMAIL_`   | 20.09%        | 6.82%         |
+| `#PHONE_`   | 9.12%         | 2.63%         |
+| `#URL_`     | 30.83%        | 31.47%        |
 
 So they are **normalised, not stripped**: each family collapses to one token
 (`emailref`, `phoneref`, `urlref`). Presence is kept, identity discarded.
@@ -214,34 +214,34 @@ likewise applied inside the pipeline, never before cross-validation.
 
 ### Model comparison (5-fold grouped stratified CV, training split)
 
-| Model | Features | F1 (fraud) | Avg. precision |
-| --- | --- | --- | --- |
-| **LinearSVC** | tfidf + structured | **0.808** | 0.878 |
-| LinearSVC | tfidf only | 0.808 | 0.861 |
-| LogisticRegression | tfidf only | 0.752 | 0.844 |
-| RandomForest | tfidf + structured | 0.734 | 0.821 |
-| MultinomialNB | tfidf + structured | 0.713 | 0.813 |
+| Model              | Features           | F1 (fraud) | Avg. precision |
+| ------------------ | ------------------ | ---------- | -------------- |
+| **LinearSVC**      | tfidf + structured | **0.808**  | 0.878          |
+| LinearSVC          | tfidf only         | 0.808      | 0.861          |
+| LogisticRegression | tfidf only         | 0.752      | 0.844          |
+| RandomForest       | tfidf + structured | 0.734      | 0.821          |
+| MultinomialNB      | tfidf + structured | 0.713      | 0.813          |
 
 ### Imbalance treatment moves the operating point, not the ranking
 
-| Strategy | F1 | Precision | Recall | Avg. precision |
-| --- | --- | --- | --- | --- |
-| None | 0.772 | 0.963 | 0.648 | 0.881 |
-| Class weighting | 0.808 | 0.899 | 0.736 | 0.878 |
-| SMOTE | 0.815 | 0.929 | 0.729 | 0.878 |
+| Strategy        | F1    | Precision | Recall | Avg. precision |
+| --------------- | ----- | --------- | ------ | -------------- |
+| None            | 0.772 | 0.963     | 0.648  | 0.881          |
+| Class weighting | 0.808 | 0.899     | 0.736  | 0.878          |
+| SMOTE           | 0.815 | 0.929     | 0.729  | 0.878          |
 
 Average precision is essentially unchanged while F1 moves by four points. The
-model's ability to *rank* postings is the same; only the threshold moves. This
+model's ability to _rank_ postings is the same; only the threshold moves. This
 matters because SMOTE is widely reported as "improving" results on this
 dataset — here it demonstrably does not improve the ranking.
 
 ### Held-out test split (3,576 postings, evaluated once)
 
-| Model | Accuracy | Precision | Recall | F1 |
-| --- | --- | --- | --- | --- |
-| Majority baseline | 0.9516 | 0.000 | 0.000 | 0.000 |
-| **LinearSVC + class weight** | 0.9857 | 0.891 | 0.804 | **0.845** |
-| LinearSVC + SMOTE | 0.9860 | 0.913 | 0.786 | 0.845 |
+| Model                        | Accuracy | Precision | Recall | F1        |
+| ---------------------------- | -------- | --------- | ------ | --------- |
+| Majority baseline            | 0.9516   | 0.000     | 0.000  | 0.000     |
+| **LinearSVC + class weight** | 0.9857   | 0.891     | 0.804  | **0.845** |
+| LinearSVC + SMOTE            | 0.9860   | 0.913     | 0.786  | 0.845     |
 
 The decision threshold is tuned on **out-of-fold** predictions. Tuning on
 in-sample training scores selects 0.831 and collapses recall to 0.35, because a
@@ -253,12 +253,12 @@ data.
 **The strongest predictor is absence of institutional footprint**, not
 vocabulary:
 
-| Signal | Fraud rate | Baseline 4.84% |
-| --- | --- | --- |
-| `has_company_logo = 0` | 15.93% | vs 1.99% when present |
+| Signal                  | Fraud rate       | Baseline 4.84%          |
+| ----------------------- | ---------------- | ----------------------- |
+| `has_company_logo = 0`  | 15.93%           | vs 1.99% when present   |
 | `company_profile` empty | 67.78% of frauds | vs 15.99% of legitimate |
-| `has_questions = 0` | 6.78% | vs 2.84% |
-| `telecommuting = 1` | 8.34% | vs 4.69% |
+| `has_questions = 0`     | 6.78%            | vs 2.84%                |
+| `telecommuting = 1`     | 8.34%            | vs 4.69%                |
 
 Among terms, the heaviest weights fall on off-platform application patterns
 (`use link`, `link urlref`, `appli use`), earnings promises (`earn`, `money`)
@@ -285,9 +285,3 @@ reports contribution as value × weight for this reason.
 - Bare digits are dropped during cleaning, so "$5,000/month" keeps `month` but
   not the figure. Stage 1 showed numeric tokens were mostly memorisation
   artifacts from one job cluster.
-
-## Attribution
-
-Code in this repository is coursework. The EMSCAD dataset remains the property
-of its creators at the University of the Aegean and is used here for academic
-purposes only.
