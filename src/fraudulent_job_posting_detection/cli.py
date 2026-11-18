@@ -34,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
         "compare", help="stage 4: cross-validate candidate models (resumable)"
     )
     compare_parser.add_argument("--only", help="run a single model by name")
+    subparsers.add_parser("imbalance", help="stage 4b: compare imbalance strategies")
+    subparsers.add_parser("evaluate", help="stage 5: held-out evaluation and interpretability")
 
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)
@@ -60,6 +62,18 @@ def main(argv: list[str] | None = None) -> int:
         from .models import run_comparison
 
         print(run_comparison(only=args.only).to_string(index=False))
+        return 0
+
+    if args.command == "imbalance":
+        from .models import run_imbalance_comparison
+
+        print(run_imbalance_comparison().to_string(index=False))
+        return 0
+
+    if args.command == "evaluate":
+        from .evaluate import run_evaluation
+
+        print(run_evaluation().to_string(index=False))
         return 0
 
     if args.command == "preprocess":

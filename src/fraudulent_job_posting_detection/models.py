@@ -218,3 +218,66 @@ def run_comparison(only: str | None = None) -> pd.DataFrame:
     table = table[ordered].sort_values("f1_fraud", ascending=False).reset_index(drop=True)
     save_table(table, "model_comparison_cv")
     return table
+
+
+def run_imbalance_comparison() -> pd.DataFrame:
+    """Stage 4b: does the imbalance remedy matter, and which one?
+
+    Compares three treatments on the strongest classifier:
+      - nothing: the estimator sees the raw 20:1 ratio
+      - class weighting: errors on the minority class cost proportionally more
+      - SMOTE: synthesise minority examples in feature space
+
+    SMOTE is applied *inside* the pipeline, so it is fitted on the training
+    folds only. Oversampling before cross-validation would place synthetic
+    copies of test examples into training -- a frequent and severe error.
+    """
+    from imblearn.over_sampling import SMOTE
+    from imblearn.pipeline import Pipeline as ImbPipeline
+
+    from .explore import save_table
+    from .splits import train_test_indices
+
+    config.ensure_directories()
+    frame = pd.read_parquet(config.PROCESSED_DIR / "corpus.parquet")
+    train_idx, _ = train_test_indices(frame)
+    train = frame.iloc[train_idx]
+    labels = train[config.TARGET].to_numpy()
+    groups = make_group_key(train).to_numpy()
+
+    def svc(balanced: bool) -> LinearSVC:
+        return LinearSVC(
+            class_weight="balanced" if balanced else None,
+            random_state=config.RANDOM_STATE, dual="auto", max_iter=20_000,
+        )
+
+    strategies: dict[str, object] = {
+        "none": Pipeline([("features", build_features()), ("clf", svc(False))]),
+        "class_weight=balanced": Pipeline(
+            [("features", build_features()), ("clf", svc(True))]
+        ),
+        "SMOTE": ImbPipeline(
+            [
+                ("features", build_features()),
+                ("smote", SMOTE(random_state=config.RANDOM_STATE, k_neighbors=5)),
+                ("clf", svc(False)),
+            ]
+        ),
+    }
+
+    rows: list[dict[str, object]] = []
+    for name, pipeline in strategies.items():
+        scores = cross_validate(
+            pipeline, train, labels, groups=groups, cv=cv_splitter(),
+            scoring=SCORING, n_jobs=1, error_score="raise",
+        )
+        row: dict[str, object] = {"strategy": name, "model": "LinearSVC"}
+        for metric in SCORING:
+            row[metric] = round(float(scores[f"test_{metric}"].mean()), 4)
+        rows.append(row)
+        logger.info("%-22s F1=%.4f  P=%.4f  R=%.4f",
+                    name, row["f1_fraud"], row["precision_fraud"], row["recall_fraud"])
+
+    table = pd.DataFrame(rows)
+    save_table(table, "imbalance_comparison")
+    return table
