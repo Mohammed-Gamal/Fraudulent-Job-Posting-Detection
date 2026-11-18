@@ -11,7 +11,8 @@
     <h1>Fraudulent Job Posting Detection</h1>
     <nav>
       {% for endpoint, label in [('index','1 · Import'), ('explore','2 · Explore'),
-                                 ('clean','3 · Clean'), ('train','4 · Train')] %}
+                                 ('clean','3 · Clean'), ('train','4 · Train'),
+                                 ('predict','5 · Predict')] %}
         <a href="{{ url_for(endpoint) }}"
            class="{{ 'active' if request.endpoint == endpoint }}">{{ label }}</a>
       {% endfor %}

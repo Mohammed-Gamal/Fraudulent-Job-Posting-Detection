@@ -37,6 +37,14 @@ from .splits import train_test_indices  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# Figures this stage produces, kept separate from the exploratory ones.
+EVAL_FIGURES: tuple[str, ...] = (
+    "confusion_matrix.png",
+    "precision_recall_test.png",
+    "threshold_tradeoff.png",
+    "top_features.png",
+)
+
 
 def _final_pipelines() -> dict[str, object]:
     """The two strongest configurations from Stage 4, for a head-to-head on test."""
@@ -108,7 +116,10 @@ def out_of_fold_threshold(
     return threshold
 
 
-def plot_precision_recall(results: dict[str, tuple[np.ndarray, np.ndarray]]) -> None:
+def plot_precision_recall(
+    results: dict[str, tuple[np.ndarray, np.ndarray]],
+    filename: str = "precision_recall_test",
+) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
     for name, (y_true, scores) in results.items():
         precision, recall, _ = precision_recall_curve(y_true, scores)
@@ -122,10 +133,13 @@ def plot_precision_recall(results: dict[str, tuple[np.ndarray, np.ndarray]]) -> 
     ax.set_title("Precision-recall on the held-out test split")
     ax.legend(loc="lower left", fontsize=9)
     ax.spines[["top", "right"]].set_visible(False)
-    save_figure("precision_recall_test")
+    save_figure(filename)
 
 
-def plot_threshold_tradeoff(y_true: np.ndarray, scores: np.ndarray) -> None:
+def plot_threshold_tradeoff(
+    y_true: np.ndarray, scores: np.ndarray,
+    filename: str = "threshold_tradeoff",
+) -> None:
     precision, recall, thresholds = precision_recall_curve(y_true, scores)
     f1 = np.divide(
         2 * precision[:-1] * recall[:-1], precision[:-1] + recall[:-1],
@@ -148,10 +162,13 @@ def plot_threshold_tradeoff(y_true: np.ndarray, scores: np.ndarray) -> None:
     ax.set_title("Operating point: precision/recall trade-off (dotted = default 0.0)")
     ax.legend()
     ax.spines[["top", "right"]].set_visible(False)
-    save_figure("threshold_tradeoff")
+    save_figure(filename)
 
 
-def plot_confusion(y_true: np.ndarray, y_pred: np.ndarray, name: str) -> None:
+def plot_confusion(
+    y_true: np.ndarray, y_pred: np.ndarray, name: str,
+    filename: str = "confusion_matrix",
+) -> None:
     matrix = confusion_matrix(y_true, y_pred)
     fig, ax = plt.subplots(figsize=(4.6, 4))
     ax.imshow(matrix, cmap="Blues")
@@ -165,7 +182,7 @@ def plot_confusion(y_true: np.ndarray, y_pred: np.ndarray, name: str) -> None:
         for j in range(2):
             ax.text(j, i, f"{matrix[i, j]:,}", ha="center", va="center",
                     color="white" if matrix[i, j] > matrix.max() / 2 else "black")
-    save_figure("confusion_matrix")
+    save_figure(filename)
 
 
 def top_features(pipeline: object, top_n: int = 25) -> pd.DataFrame:

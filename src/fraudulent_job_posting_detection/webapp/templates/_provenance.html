@@ -1,0 +1,23 @@
+{# How the stored corpus was built. Shown wherever the corpus is used, so the
+   page can never imply settings that differ from the data on disk. #}
+{% macro provenance(data) %}
+  {% if data %}
+    <div class="provenance">
+      <strong>Corpus built {{ data.built_at }}</strong>
+      <span class="muted">{{ "{:,}".format(data.rows) }} postings ·
+        median {{ data.median_tokens }} tokens</span>
+      <ul>
+        {% for option in data.options %}
+          <li class="{{ 'on' if option.enabled else 'off' }}">
+            {{ '✓' if option.enabled else '✗' }} {{ option.label }}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% else %}
+    <div class="flash error">
+      No build record for the stored corpus. Rebuild it on the Clean page so the
+      settings that produced it are known.
+    </div>
+  {% endif %}
+{% endmacro %}

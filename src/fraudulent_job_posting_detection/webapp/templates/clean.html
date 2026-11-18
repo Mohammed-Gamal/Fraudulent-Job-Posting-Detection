@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% from "_table.html" import render as table %}
 {% from "_progress.html" import progress %}
+{% from "_provenance.html" import provenance as show_provenance %}
 {% block title %}Clean{% endblock %}
 {% block content %}
 <section class="card">
   <h2>Clean and tokenise</h2>
+  <p class="muted">Text normalisation only. The train/test split lives on the Train page.</p>
   {{ progress(job, 'clean') }}
   {% if job.status != 'running' %}
     <form method="post" action="{{ url_for('clean_run') }}">
@@ -37,13 +38,8 @@
 
 {% if corpus_ready %}
   <section class="card">
-    <h2>Train / test split</h2>
-    <p class="muted">
-      Grouped on description text: 4,446 postings share a description with another,
-      so a plain random split would place identical text on both sides and inflate
-      the score. Grouping keeps every duplicate cluster on one side.
-    </p>
-    {{ table(split_table) }}
+    <h2>What is on disk</h2>
+    {{ show_provenance(provenance) }}
   </section>
 
   <section class="card">

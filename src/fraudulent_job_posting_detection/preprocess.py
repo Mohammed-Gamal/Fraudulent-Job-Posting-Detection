@@ -15,9 +15,11 @@ against 6.8% of legitimate ones), so each family collapses to a single token.
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 import unicodedata
+from datetime import UTC, datetime
 
 import pandas as pd
 from nltk.stem import PorterStemmer
@@ -148,15 +150,74 @@ def build_corpus(frame: pd.DataFrame, **options: bool) -> pd.DataFrame:
     return result
 
 
+DEFAULT_OPTIONS: dict[str, bool] = {
+    "remove_stopwords": True,
+    "stem": True,
+    "normalise_placeholders": True,
+}
+
+CORPUS_PATH = config.PROCESSED_DIR / "corpus.parquet"
+CORPUS_META_PATH = config.PROCESSED_DIR / "corpus_meta.json"
+
+
+def read_corpus_meta() -> dict[str, object] | None:
+    """How the corpus on disk was actually built, or None if unknown.
+
+    Without this the interface cannot tell which options produced the stored
+    corpus: a user could disable stemming, rebuild, restart, and then be shown
+    the default settings while training on a corpus built differently. Any
+    reported methodology would be wrong, and nothing would look broken.
+    """
+    if not CORPUS_META_PATH.exists():
+        return None
+    try:
+        return json.loads(CORPUS_META_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def run_preprocess(**options: bool) -> pd.DataFrame:
-    """Build and persist the cleaned corpus."""
+    """Build and persist the cleaned corpus, recording how it was built."""
     from .data import load_raw
 
     config.ensure_directories()
+    settings = {**DEFAULT_OPTIONS, **options}
     frame = load_raw()
-    processed = build_corpus(frame, **options)
+    processed = build_corpus(frame, **settings)
 
-    out = config.PROCESSED_DIR / "corpus.parquet"
-    processed.to_parquet(out, index=False)
-    logger.info("corpus -> %s", out.relative_to(config.PROJECT_ROOT))
+    processed.to_parquet(CORPUS_PATH, index=False)
+    CORPUS_META_PATH.write_text(
+        json.dumps(
+            {
+                "options": settings,
+                "built_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+                "rows": int(len(processed)),
+                "median_tokens": int(processed["n_tokens"].median()),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    logger.info("corpus -> %s (options: %s)", CORPUS_PATH.name, settings)
     return processed
+
+
+def build_single_posting(values: dict[str, object], **options: bool) -> pd.DataFrame:
+    """Turn one pasted job advert into a single-row frame the models accept.
+
+    Routed through `build_corpus`, the same function used for the training
+    data, so a posting typed into the interface is cleaned identically to the
+    corpus. Doing this by hand is how train/serve skew creeps in.
+    """
+    row: dict[str, object] = {}
+    for field in config.TEXT_FIELDS:
+        text = str(values.get(field, "") or "").strip()
+        row[field] = text or None
+    for field in config.CATEGORICAL_FIELDS:
+        row[field] = values.get(field) or None
+    for flag in config.BINARY_FLAGS:
+        row[flag] = int(bool(values.get(flag, 0)))
+
+    frame = pd.DataFrame([row])
+    settings = {**DEFAULT_OPTIONS, **options}
+    return build_corpus(frame, **settings)

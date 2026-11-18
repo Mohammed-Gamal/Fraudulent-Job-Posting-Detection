@@ -1,5 +1,7 @@
 {% extends "base.html" %}
+{% from "_table.html" import render as table %}
 {% from "_progress.html" import progress %}
+{% from "_provenance.html" import provenance as show_provenance %}
 {% block title %}Train{% endblock %}
 {% block content %}
 {% if not corpus_ready %}
@@ -8,6 +10,18 @@
     <p><a class="button" href="{{ url_for('clean') }}">Go to Clean →</a></p>
   </section>
 {% else %}
+
+<section class="card">
+  <h2>Evaluation protocol</h2>
+  <p class="muted">
+    The split is grouped on description text: 4,446 postings share a description
+    with another, so a plain random split would put identical text on both sides
+    and inflate the score. Grouping keeps every duplicate cluster on one side.
+  </p>
+  {{ table(split_table) }}
+  {{ show_provenance(provenance) }}
+</section>
+
 <section class="card">
   <h2>Train and compare</h2>
   {{ progress(job, 'train') }}
@@ -68,6 +82,8 @@
         </li>
       {% endfor %}
     </ol>
+    <p class="muted">The winner is saved and used by the
+      <a href="{{ url_for('predict') }}">Predict</a> page.</p>
   </section>
 
   <section class="card">
@@ -92,6 +108,24 @@
       that belong in a report, run <code>uv run fjpd compare</code>.
     </p>
   </section>
+
+  {% if figures %}
+  <section class="card">
+    <h2>Diagnostics for the best model</h2>
+    <p class="muted">
+      A table of numbers hides the trade-off. The threshold plot shows what you
+      give up in precision for each point of recall.
+    </p>
+    <div class="gallery">
+      {% for name in figures %}
+        <figure>
+          <img src="{{ url_for('figure', filename=name) }}" alt="{{ name }}" loading="lazy">
+          <figcaption>{{ name.replace('ui_', '').replace('_', ' ').replace('.png', '') }}</figcaption>
+        </figure>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 {% endif %}
 {% endif %}
 {% endblock %}

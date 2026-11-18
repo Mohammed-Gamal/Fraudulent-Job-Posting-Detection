@@ -98,23 +98,40 @@ uv sync
 uv run fjpd serve      # then open http://127.0.0.1:5000
 ```
 
-Four pages, one per stage:
+Five pages. Each owns one stage and shows only that stage's output.
 
 | Page | Does |
 | --- | --- |
 | Import | Upload `fake_job_postings.csv`, validate it, show the class balance |
-| Explore | Raw preview, missingness, fraud rate by flag, generated figures |
-| Clean | Toggle placeholder normalisation / stopwords / stemming, build the corpus, audit the split |
-| Train | Pick models, metrics and imbalance strategy; ranked results and a top-3 podium |
+| Explore | Raw preview, missingness, fraud rate by flag, the three stage-1 figures |
+| Clean | Toggle placeholder normalisation / stopwords / stemming, build the corpus, show what built it |
+| Train | The grouped split, model and metric selection, ranked results, top-3 podium, diagnostic plots |
+| Predict | Paste an advert and score it with the saved best model, with per-term contributions |
 
-Long actions (cleaning ~30s, training ~15s per model) run on a worker thread
-while the page polls `/job/<name>`, so no HTTP request is held open. The job
-registry is an in-memory dict: this is a single-user local tool, not a
+**Corpus provenance.** Cleaning options are recorded in
+`data/processed/corpus_meta.json` and displayed on both Clean and Train. Without
+this the interface could show default settings while the stored corpus was built
+differently — you would report a methodology you did not run, and nothing would
+look wrong.
+
+**Prediction.** The best model from each training run is saved to
+`models/ui_model.joblib`. A pasted advert is cleaned through the same
+`build_corpus` used for the training data, so it cannot drift from what the
+model learned on. For linear models the page lists contributions as
+value x weight, not weight alone: a heavily weighted term that barely appears
+contributes little, and the TF-IDF and binary blocks differ in scale by
+roughly 14x.
+
+**Background jobs.** Cleaning (~30s) and training (~15s per model) run on a
+worker thread while the page polls `/job/<name>`, so no HTTP request is held
+open. Results are written to `models/ui_results.json` as well as held in
+memory, so a restart does not strand a saved model with no results beside it.
+The job registry is an in-memory dict: this is a single-user local tool, not a
 multi-worker deployment.
 
-The interface calls the same functions as the CLI, so results agree. It uses
-one grouped train/test split for responsiveness; `fjpd compare` runs the
-5-fold cross-validation whose numbers belong in the report.
+The interface calls the same functions as the CLI. It uses one grouped
+train/test split for responsiveness; `fjpd compare` runs the 5-fold
+cross-validation whose numbers belong in the report.
 
 ## Key findings
 

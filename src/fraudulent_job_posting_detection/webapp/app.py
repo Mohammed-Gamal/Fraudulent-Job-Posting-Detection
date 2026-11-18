@@ -1,19 +1,21 @@
 """Flask interface for the fraud detection pipeline.
 
-Four pages, one per stage:
+Five pages, each owning one stage and showing only that stage's output:
 
-    /          import  -- upload or locate the CSV, validate it
-    /explore   explore -- class balance, missingness, figures
-    /clean     clean   -- preprocessing options, build the corpus
-    /train     train   -- pick models and metrics, see the top 3
+    /          import  -- upload the CSV and validate it
+    /explore   explore -- raw distributions and the stage-1 figures
+    /clean     clean   -- cleaning options, corpus provenance, cleaned samples
+    /train     train   -- the split, model selection, results and diagnostics
+    /predict   predict -- score a pasted advert with the saved model
 
-Every route is thin: it reads the form, calls the library, and renders a
-template. All the analysis lives in the sibling modules, so the same code
-backs both the CLI and this interface.
+Routes stay thin: read the form, call the library, render a template. All
+analysis lives in the sibling modules, so the CLI and this interface share
+one implementation and cannot drift apart.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pandas as pd
@@ -24,15 +26,31 @@ from flask import (
 
 from .. import config
 from ..data import DatasetError, class_balance, load_raw, missingness
-from ..models import ALL_METRICS, IMBALANCE_STRATEGIES, candidate_models, train_and_evaluate
-from ..preprocess import run_preprocess
+from ..explore import EDA_FIGURES
+from ..models import (
+    ALL_METRICS, IMBALANCE_STRATEGIES, UI_FIGURES,
+    candidate_models, load_ui_model, train_and_evaluate,
+)
+from ..predict import corpus_options, predict_posting
+from ..preprocess import CORPUS_PATH, DEFAULT_OPTIONS, read_corpus_meta, run_preprocess
 from ..splits import audit_split, train_test_indices
 from . import jobs
 
 logger = logging.getLogger(__name__)
 
-CORPUS_PATH = config.PROCESSED_DIR / "corpus.parquet"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+# Training results are written here as well as held in memory. The best model
+# is already persisted, so without this a restart would leave a saved model
+# with no results beside it -- and the diagnostic plots on disk would never be
+# shown again.
+RESULTS_PATH = config.MODELS_DIR / "ui_results.json"
+
+OPTION_LABELS: dict[str, str] = {
+    "normalise_placeholders": "Normalise redaction placeholders",
+    "remove_stopwords": "Remove stopwords",
+    "stem": "Porter stemming",
+}
 
 
 def corpus_exists() -> bool:
@@ -58,6 +76,36 @@ def dataset_summary() -> dict[str, object] | None:
     }
 
 
+def save_results(payload: dict[str, object]) -> None:
+    RESULTS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def load_results() -> dict[str, object] | None:
+    if not RESULTS_PATH.exists():
+        return None
+    try:
+        return json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def corpus_provenance() -> dict[str, object] | None:
+    """What built the stored corpus, formatted for display."""
+    meta = read_corpus_meta()
+    if meta is None:
+        return None
+    options = {**DEFAULT_OPTIONS, **meta.get("options", {})}
+    return {
+        "built_at": meta.get("built_at", "unknown"),
+        "rows": meta.get("rows"),
+        "median_tokens": meta.get("median_tokens"),
+        "options": [
+            {"label": OPTION_LABELS.get(key, key), "enabled": bool(value)}
+            for key, value in options.items()
+        ],
+    }
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config["SECRET_KEY"] = "fjpd-local-only"
@@ -68,10 +116,7 @@ def create_app() -> Flask:
     @app.route("/")
     def index():
         return render_template(
-            "index.html",
-            summary=dataset_summary(),
-            raw_path=config.RAW_CSV,
-            corpus_ready=corpus_exists(),
+            "index.html", summary=dataset_summary(), raw_path=config.RAW_CSV
         )
 
     @app.post("/upload")
@@ -111,7 +156,7 @@ def create_app() -> Flask:
             summary=summary,
             tables={name: _to_rows(table) for name, table in tables.items()},
             preview=_to_rows(_preview(frame)),
-            figures=_available_figures(),
+            figures=_existing(EDA_FIGURES),
             job=jobs.get("explore").as_dict(),
         )
 
@@ -131,26 +176,17 @@ def create_app() -> Flask:
     # ----------------------------------------------------------------- clean
     @app.route("/clean")
     def clean():
-        split_table = None
-        if corpus_exists():
-            frame = read_corpus()
-            train_idx, test_idx = train_test_indices(frame)
-            split_table = _to_rows(audit_split(frame, train_idx, test_idx))
         return render_template(
             "clean.html",
             corpus_ready=corpus_exists(),
-            split_table=split_table,
+            provenance=corpus_provenance(),
             sample=_corpus_sample(),
             job=jobs.get("clean").as_dict(),
         )
 
     @app.post("/clean/run")
     def clean_run():
-        options = {
-            "remove_stopwords": "remove_stopwords" in request.form,
-            "stem": "stem" in request.form,
-            "normalise_placeholders": "normalise_placeholders" in request.form,
-        }
+        options = {key: key in request.form for key in DEFAULT_OPTIONS}
 
         def task(progress):
             progress(0, 1, "cleaning and tokenising 17,880 postings")
@@ -164,18 +200,24 @@ def create_app() -> Flask:
     # ----------------------------------------------------------------- train
     @app.route("/train")
     def train():
+        if not corpus_exists():
+            return render_template("train.html", corpus_ready=False)
+
+        frame = read_corpus()
+        train_idx, test_idx = train_test_indices(frame)
         job = jobs.get("train")
-        results = job.result if job.status == "done" else None
-        chosen = (results or {}).get("metrics", list(ALL_METRICS)) if results else None
         return render_template(
             "train.html",
-            corpus_ready=corpus_exists(),
+            corpus_ready=True,
+            provenance=corpus_provenance(),
+            split_table=_to_rows(audit_split(frame, train_idx, test_idx)),
             models=list(candidate_models()),
             all_metrics=ALL_METRICS,
             strategies=IMBALANCE_STRATEGIES,
             job=job.as_dict(),
-            results=results,
-            chosen_metrics=chosen,
+            # Prefer this session's result; fall back to the last run on disk.
+            results=job.result if job.status == "done" else load_results(),
+            figures=_existing(UI_FIGURES),
         )
 
     @app.post("/train/run")
@@ -193,20 +235,69 @@ def create_app() -> Flask:
             return redirect(url_for("train"))
 
         def task(progress):
-            frame = read_corpus()
-            table = train_and_evaluate(frame, selected, strategy, progress)
-            table = table.sort_values(rank_by, ascending=False).reset_index(drop=True)
-            return {
+            table = train_and_evaluate(
+                read_corpus(), selected, strategy, rank_by, progress
+            )
+            payload = {
                 "rows": table.to_dict("records"),
                 "metrics": metrics,
                 "rank_by": rank_by,
                 "strategy": strategy,
                 "podium": table.head(3).to_dict("records"),
             }
+            save_results(payload)
+            return payload
 
         if not jobs.start("train", task):
             flash("Training is already running.", "error")
         return redirect(url_for("train"))
+
+    # --------------------------------------------------------------- predict
+    @app.route("/predict")
+    def predict():
+        saved = load_ui_model()
+        return render_template(
+            "predict.html",
+            model_name=saved[0] if saved else None,
+            options=corpus_options(),
+            example=_EXAMPLE_POSTING,
+            form={},
+            result=None,
+        )
+
+    @app.post("/predict")
+    def predict_run():
+        saved = load_ui_model()
+        if saved is None:
+            flash("Train a model first — the prediction page uses the best one.", "error")
+            return redirect(url_for("train"))
+
+        name, pipeline = saved
+        values: dict[str, object] = {
+            field: request.form.get(field, "") for field in config.TEXT_FIELDS
+        }
+        for flag in config.BINARY_FLAGS:
+            values[flag] = 1 if flag in request.form else 0
+
+        if not str(values.get("description", "")).strip():
+            flash("A description is required.", "error")
+            return redirect(url_for("predict"))
+
+        try:
+            result = predict_posting(pipeline, values)
+        except Exception as exc:
+            logger.exception("prediction failed")
+            flash(f"Prediction failed: {type(exc).__name__}: {exc}", "error")
+            return redirect(url_for("predict"))
+
+        return render_template(
+            "predict.html",
+            model_name=name,
+            options=corpus_options(),
+            example=_EXAMPLE_POSTING,
+            form=request.form,
+            result=result,
+        )
 
     # ------------------------------------------------------------ job status
     @app.get("/job/<name>")
@@ -223,8 +314,24 @@ def create_app() -> Flask:
 # ---------------------------------------------------------------------------
 # Small view helpers
 # ---------------------------------------------------------------------------
+_EXAMPLE_POSTING = {
+    "title": "Data Entry Clerk - Work From Home",
+    "description": (
+        "Earn $5000 per month working from home! No experience necessary. "
+        "We are recruiting motivated individuals to start immediately. "
+        "Apply using the link below and send your details to our recruiter."
+    ),
+    "requirements": "Must have a computer and internet access. High school diploma.",
+}
+
+
 def _to_rows(table: pd.DataFrame) -> dict[str, object]:
     return {"columns": list(table.columns), "rows": table.values.tolist()}
+
+
+def _existing(names: tuple[str, ...]) -> list[str]:
+    """Keep only the declared figures that have actually been generated."""
+    return [name for name in names if (config.FIGURES_DIR / name).exists()]
 
 
 def _preview(frame: pd.DataFrame, n: int = 8) -> pd.DataFrame:
@@ -241,12 +348,6 @@ def _flag_table(frame: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(
         [fraud_rate_by(frame, flag) for flag in config.BINARY_FLAGS], ignore_index=True
     )
-
-
-def _available_figures() -> list[str]:
-    if not config.FIGURES_DIR.exists():
-        return []
-    return sorted(path.name for path in config.FIGURES_DIR.glob("*.png"))
 
 
 def _corpus_sample(n: int = 3) -> list[dict[str, str]]:

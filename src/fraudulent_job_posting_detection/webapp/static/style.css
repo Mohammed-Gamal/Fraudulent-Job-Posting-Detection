@@ -117,3 +117,39 @@ blockquote.legitimate { border-left-color: var(--legit); }
 }
 .rank-1 .medal { background: var(--accent); color: #fff; }
 .podium em { margin-left: auto; color: var(--muted); font-style: normal; font-size: 13.5px; }
+
+/* ---- corpus provenance ---- */
+.provenance {
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 13px 16px; margin: 12px 0;
+}
+.provenance strong { display: block; font-size: 14px; }
+.provenance ul { list-style: none; padding: 0; margin: 9px 0 0;
+                 display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+.provenance li.on { color: var(--ok); }
+.provenance li.off { color: var(--muted); text-decoration: line-through; }
+
+/* ---- predict page ---- */
+label.field { display: block; margin-bottom: 13px; }
+label.field > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+label.field em { font-weight: 400; color: var(--muted); }
+input[type=text], textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 6px; font: inherit; font-size: 13.5px; background: #fff;
+}
+textarea { resize: vertical; }
+
+.verdict {
+  display: flex; align-items: baseline; gap: 16px;
+  padding: 16px 20px; border-radius: 9px; margin: 12px 0;
+  border: 2px solid var(--line);
+}
+.verdict strong { font-size: 21px; letter-spacing: .02em; }
+.verdict span { color: var(--muted); font-size: 13.5px; }
+.verdict.fraudulent { border-color: var(--fraud); background: #fdecec; }
+.verdict.fraudulent strong { color: var(--fraud); }
+.verdict.legitimate { border-color: var(--legit); background: #eef4fb; }
+.verdict.legitimate strong { color: var(--legit); }
+
+td.fraudulent { color: var(--fraud); font-weight: 600; }
+td.legitimate { color: var(--legit); font-weight: 600; }

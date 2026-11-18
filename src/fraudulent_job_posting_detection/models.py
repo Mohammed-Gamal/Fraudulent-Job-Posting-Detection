@@ -313,10 +313,59 @@ def _wrap_strategy(estimator: object, strategy: str) -> object:
     return Pipeline([("features", features), ("clf", estimator)])
 
 
+UI_MODEL_PATH = config.MODELS_DIR / "ui_model.joblib"
+
+# Figures regenerated after every interactive training run, named apart from
+# the CLI's so an exploratory run never overwrites report output.
+UI_FIGURES: tuple[str, ...] = (
+    "ui_confusion_matrix.png",
+    "ui_precision_recall.png",
+    "ui_threshold_tradeoff.png",
+)
+
+
+def _save_and_plot_best(
+    name: str,
+    pipeline: object,
+    y_test: np.ndarray,
+    scores: np.ndarray,
+    predictions: np.ndarray,
+) -> None:
+    """Persist the winning pipeline and draw its diagnostic plots.
+
+    Saved so the prediction page has a model to use: training results that
+    vanish when the process restarts are of no use for a demo.
+    """
+    import joblib
+
+    from .evaluate import plot_confusion, plot_precision_recall, plot_threshold_tradeoff
+
+    joblib.dump({"name": name, "pipeline": pipeline}, UI_MODEL_PATH)
+    plot_confusion(y_test, predictions, name, filename="ui_confusion_matrix")
+    plot_precision_recall({name: (y_test, scores)}, filename="ui_precision_recall")
+    plot_threshold_tradeoff(y_test, scores, filename="ui_threshold_tradeoff")
+    logger.info("best model %s saved to %s", name, UI_MODEL_PATH.name)
+
+
+def load_ui_model() -> tuple[str, object] | None:
+    """The pipeline saved by the last interactive training run, if any."""
+    if not UI_MODEL_PATH.exists():
+        return None
+    import joblib
+
+    try:
+        payload = joblib.load(UI_MODEL_PATH)
+        return payload["name"], payload["pipeline"]
+    except Exception:
+        logger.exception("could not load %s", UI_MODEL_PATH)
+        return None
+
+
 def train_and_evaluate(
     frame: pd.DataFrame,
     model_names: list[str],
     strategy: str = "class_weight",
+    rank_by: str = "f1_fraud",
     progress: object = None,
 ) -> pd.DataFrame:
     """Fit each selected model on the training split and score it on the test split.
@@ -341,6 +390,8 @@ def train_and_evaluate(
 
     available = candidate_models(balanced=(strategy == "class_weight"))
     rows: list[dict[str, object]] = []
+    fitted: dict[str, object] = {}
+    outputs: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
     for position, name in enumerate(model_names, start=1):
         if progress is not None:
@@ -355,6 +406,8 @@ def train_and_evaluate(
         else:
             scores = pipeline.predict_proba(test)[:, 1]
 
+        fitted[name] = pipeline
+        outputs[name] = (scores, predictions)
         rows.append({
             "model": name,
             "accuracy": round(float(accuracy_score(y_test, predictions)), 4),
@@ -366,6 +419,15 @@ def train_and_evaluate(
         })
         logger.info("%s trained: F1=%.4f", name, rows[-1]["f1_fraud"])
 
+    table = pd.DataFrame(rows).sort_values(rank_by, ascending=False)
+    table = table.reset_index(drop=True)
+
+    best = str(table.loc[0, "model"])
+    if progress is not None:
+        progress(len(model_names), len(model_names), f"saving {best}")
+    best_scores, best_predictions = outputs[best]
+    _save_and_plot_best(best, fitted[best], y_test, best_scores, best_predictions)
+
     if progress is not None:
         progress(len(model_names), len(model_names), "done")
-    return pd.DataFrame(rows)
+    return table

@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 
 PALETTE = {"legitimate": "#4C78A8", "fraudulent": "#E45756"}
 
+# Figures this stage produces. Declared explicitly so the interface can show
+# exploratory output without sweeping up evaluation results from stage 5.
+EDA_FIGURES: tuple[str, ...] = (
+    "text_length_description.png",
+    "fraud_rate_binary_flags.png",
+    "distinguishing_terms.png",
+)
+
 
 # ---------------------------------------------------------------------------
 # Output helpers
