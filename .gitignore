@@ -1,0 +1,41 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.venv-*
+venv/
+
+# Data: large and redistribution-restricted. Keep the folders, not the contents.
+data/raw/*
+data/interim/*
+data/processed/*
+!data/**/.gitkeep
+
+# Trained model artifacts (regenerable)
+models/*
+!models/.gitkeep
+
+# Generated reports (regenerable). Comment these out if your submission
+# requires figures tracked in the repo.
+reports/figures/*
+reports/tables/*
+!reports/**/.gitkeep
+
+# Notebooks
+.ipynb_checkpoints/
+
+# NLTK data downloaded locally
+nltk_data/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
