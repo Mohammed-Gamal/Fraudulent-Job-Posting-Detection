@@ -30,6 +30,10 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("explore", help="stage 1: exploratory data analysis")
     subparsers.add_parser("preprocess", help="stage 2: clean text and persist the corpus")
     subparsers.add_parser("split", help="stage 2: build and audit the leakage-controlled split")
+    compare_parser = subparsers.add_parser(
+        "compare", help="stage 4: cross-validate candidate models (resumable)"
+    )
+    compare_parser.add_argument("--only", help="run a single model by name")
 
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)
@@ -50,6 +54,12 @@ def main(argv: list[str] | None = None) -> int:
         from .explore import run_eda
 
         run_eda()
+        return 0
+
+    if args.command == "compare":
+        from .models import run_comparison
+
+        print(run_comparison(only=args.only).to_string(index=False))
         return 0
 
     if args.command == "preprocess":
