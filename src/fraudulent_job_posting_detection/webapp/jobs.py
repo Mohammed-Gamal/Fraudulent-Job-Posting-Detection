@@ -55,10 +55,6 @@ def get(name: str) -> Job:
         return _JOBS.setdefault(name, Job())
 
 
-def is_running(name: str) -> bool:
-    return get(name).status == "running"
-
-
 def start(name: str, target: Callable[[Callable[[int, int, str], None]], Any]) -> bool:
     """Run `target` on a worker thread. Returns False if that job is already running.
 

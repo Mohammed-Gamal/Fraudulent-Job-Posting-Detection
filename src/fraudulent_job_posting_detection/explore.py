@@ -10,19 +10,15 @@ from __future__ import annotations
 import logging
 import re
 
-import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-matplotlib.use("Agg")  # headless: write files, never open a window
-import matplotlib.pyplot as plt  # noqa: E402
-
-from . import config  # noqa: E402
-from .data import class_balance, load_raw, missingness  # noqa: E402
+from . import config
+from .data import class_balance, load_raw, missingness
+from .plotting import PALETTE, save_figure, save_table, two_panel_barh
 
 logger = logging.getLogger(__name__)
-
-PALETTE = {"legitimate": "#4C78A8", "fraudulent": "#E45756"}
 
 # Figures this stage produces. Declared explicitly so the interface can show
 # exploratory output without sweeping up evaluation results from stage 5.
@@ -31,25 +27,6 @@ EDA_FIGURES: tuple[str, ...] = (
     "fraud_rate_binary_flags.png",
     "distinguishing_terms.png",
 )
-
-
-# ---------------------------------------------------------------------------
-# Output helpers
-# ---------------------------------------------------------------------------
-def save_table(frame: pd.DataFrame, name: str) -> None:
-    """Write a table as both CSV (for reuse) and Markdown (for the report)."""
-    frame.to_csv(config.TABLES_DIR / f"{name}.csv", index=False)
-    (config.TABLES_DIR / f"{name}.md").write_text(
-        frame.to_markdown(index=False), encoding="utf-8"
-    )
-    logger.info("table -> reports/tables/%s.{csv,md}", name)
-
-
-def save_figure(name: str) -> None:
-    plt.tight_layout()
-    plt.savefig(config.FIGURES_DIR / f"{name}.png", dpi=150, bbox_inches="tight")
-    plt.close()
-    logger.info("figure -> reports/figures/%s.png", name)
 
 
 # ---------------------------------------------------------------------------
@@ -200,19 +177,14 @@ def distinguishing_terms(
 
 
 def plot_distinguishing_terms(terms: pd.DataFrame, top_n: int = 15) -> None:
-    fraud = terms[terms["indicative_of"] == "fraudulent"].nlargest(top_n, "log_odds")
-    legit = terms[terms["indicative_of"] == "legitimate"].nsmallest(top_n, "log_odds")
-    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
-    for ax, data, colour, title in (
-        (axes[0], fraud.iloc[::-1], PALETTE["fraudulent"], "Indicative of fraud"),
-        (axes[1], legit, PALETTE["legitimate"], "Indicative of legitimacy"),
-    ):
-        labels = [t if len(t) <= 22 else t[:19] + "..." for t in data["term"]]
-        ax.barh(labels, data["log_odds"], color=colour)
-        ax.set_title(title, fontsize=11)
-        ax.set_xlabel("log-odds ratio")
-        ax.spines[["top", "right"]].set_visible(False)
-    save_figure("distinguishing_terms")
+    two_panel_barh(
+        terms[terms["indicative_of"] == "fraudulent"].nlargest(top_n, "log_odds").iloc[::-1],
+        terms[terms["indicative_of"] == "legitimate"].nsmallest(top_n, "log_odds"),
+        value_column="log_odds",
+        label_column="term",
+        xlabel="log-odds ratio",
+        filename="distinguishing_terms",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -289,14 +261,13 @@ def duplicate_audit(frame: pd.DataFrame) -> pd.DataFrame:
     groups = frame.loc[duplicate_text.index].groupby(duplicate_text)
     label_spread = groups[config.TARGET].nunique()
 
-    return pd.DataFrame(
-        [
-            {"metric": "postings with non-empty description", "value": int(len(non_empty))},
-            {"metric": "postings whose description is duplicated", "value": int(duplicated_mask.sum())},
-            {"metric": "distinct duplicated description texts", "value": int(groups.ngroups)},
-            {"metric": "duplicate groups containing BOTH classes", "value": int((label_spread > 1).sum())},
-        ]
-    )
+    metrics = [
+        ("postings with non-empty description", len(non_empty)),
+        ("postings whose description is duplicated", duplicated_mask.sum()),
+        ("distinct duplicated description texts", groups.ngroups),
+        ("duplicate groups containing BOTH classes", (label_spread > 1).sum()),
+    ]
+    return pd.DataFrame([{"metric": k, "value": int(v)} for k, v in metrics])
 
 
 # ---------------------------------------------------------------------------

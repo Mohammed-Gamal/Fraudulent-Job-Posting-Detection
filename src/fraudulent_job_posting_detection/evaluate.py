@@ -11,65 +11,48 @@ from __future__ import annotations
 import logging
 
 import joblib
-import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-
-from sklearn.metrics import (  # noqa: E402
+from sklearn.base import clone
+from sklearn.metrics import (
     average_precision_score,
     classification_report,
     confusion_matrix,
     precision_recall_curve,
     roc_auc_score,
 )
+from sklearn.model_selection import cross_val_predict
 
-from . import config  # noqa: E402
-from .explore import save_figure, save_table  # noqa: E402
-from sklearn.base import clone  # noqa: E402
-from sklearn.model_selection import cross_val_predict  # noqa: E402
-
-from .models import build_features  # noqa: E402
-from .splits import cv_splitter, make_group_key  # noqa: E402
-from .splits import train_test_indices  # noqa: E402
+from . import config
+from .plotting import save_figure, save_table, two_panel_barh
+from .splits import cv_splitter, make_group_key, train_test_indices
 
 logger = logging.getLogger(__name__)
 
-# Figures this stage produces, kept separate from the exploratory ones.
-EVAL_FIGURES: tuple[str, ...] = (
-    "confusion_matrix.png",
-    "precision_recall_test.png",
-    "threshold_tradeoff.png",
-    "top_features.png",
-)
+
+def _f1_curve(
+    y_true: np.ndarray, scores: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Precision, recall, thresholds and F1 at every threshold.
+
+    precision_recall_curve returns one more point than it does thresholds, so
+    the final element is dropped to keep the four arrays aligned.
+    """
+    precision, recall, thresholds = precision_recall_curve(y_true, scores)
+    precision, recall = precision[:-1], recall[:-1]
+    total = precision + recall
+    f1 = np.divide(2 * precision * recall, total, out=np.zeros_like(total), where=total > 0)
+    return precision, recall, thresholds, f1
 
 
 def _final_pipelines() -> dict[str, object]:
     """The two strongest configurations from Stage 4, for a head-to-head on test."""
-    from imblearn.over_sampling import SMOTE
-    from imblearn.pipeline import Pipeline as ImbPipeline
-    from sklearn.pipeline import Pipeline
-    from sklearn.svm import LinearSVC
-
-    def svc(balanced: bool) -> LinearSVC:
-        return LinearSVC(
-            class_weight="balanced" if balanced else None,
-            random_state=config.RANDOM_STATE, dual="auto", max_iter=20_000,
-        )
+    from .models import linear_svc, wrap_strategy
 
     return {
-        "LinearSVC + class_weight": Pipeline(
-            [("features", build_features()), ("clf", svc(True))]
-        ),
-        "LinearSVC + SMOTE": ImbPipeline(
-            [
-                ("features", build_features()),
-                ("smote", SMOTE(random_state=config.RANDOM_STATE)),
-                ("clf", svc(False)),
-            ]
-        ),
+        "LinearSVC + class_weight": wrap_strategy(linear_svc(True), "class_weight"),
+        "LinearSVC + SMOTE": wrap_strategy(linear_svc(False), "smote"),
     }
 
 
@@ -82,14 +65,7 @@ def _scores(pipeline: object, frame: pd.DataFrame) -> np.ndarray:
 
 def best_threshold(y_true: np.ndarray, scores: np.ndarray) -> tuple[float, float]:
     """Threshold maximising F1 on the fraudulent class."""
-    precision, recall, thresholds = precision_recall_curve(y_true, scores)
-    # precision_recall_curve returns one more point than thresholds.
-    f1 = np.divide(
-        2 * precision[:-1] * recall[:-1],
-        precision[:-1] + recall[:-1],
-        out=np.zeros_like(precision[:-1]),
-        where=(precision[:-1] + recall[:-1]) > 0,
-    )
+    _, _, thresholds, f1 = _f1_curve(y_true, scores)
     best = int(np.argmax(f1))
     return float(thresholds[best]), float(f1[best])
 
@@ -140,14 +116,10 @@ def plot_threshold_tradeoff(
     y_true: np.ndarray, scores: np.ndarray,
     filename: str = "threshold_tradeoff",
 ) -> None:
-    precision, recall, thresholds = precision_recall_curve(y_true, scores)
-    f1 = np.divide(
-        2 * precision[:-1] * recall[:-1], precision[:-1] + recall[:-1],
-        out=np.zeros_like(precision[:-1]), where=(precision[:-1] + recall[:-1]) > 0,
-    )
+    precision, recall, thresholds, f1 = _f1_curve(y_true, scores)
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
-    ax.plot(thresholds, precision[:-1], label="precision")
-    ax.plot(thresholds, recall[:-1], label="recall")
+    ax.plot(thresholds, precision, label="precision")
+    ax.plot(thresholds, recall, label="recall")
     ax.plot(thresholds, f1, label="F1", lw=2)
     peak = int(np.argmax(f1))
     ax.axvline(thresholds[peak], ls="--", lw=1, color="grey")
@@ -201,19 +173,16 @@ def top_features(pipeline: object, top_n: int = 25) -> pd.DataFrame:
 
 
 def plot_top_features(table: pd.DataFrame, top_n: int = 15) -> None:
-    fraud = table[table["pushes"] == "fraudulent"].nlargest(top_n, "coefficient")
-    legit = table[table["pushes"] == "legitimate"].nsmallest(top_n, "coefficient")
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    for ax, data, colour, title in (
-        (axes[0], fraud.iloc[::-1], "#E45756", "Pushes toward FRAUDULENT"),
-        (axes[1], legit, "#4C78A8", "Pushes toward LEGITIMATE"),
-    ):
-        labels = [f if len(f) <= 24 else f[:21] + "..." for f in data["feature"]]
-        ax.barh(labels, data["coefficient"], color=colour)
-        ax.set_title(title, fontsize=11)
-        ax.set_xlabel("LinearSVC coefficient")
-        ax.spines[["top", "right"]].set_visible(False)
-    save_figure("top_features")
+    two_panel_barh(
+        table[table["pushes"] == "fraudulent"].nlargest(top_n, "coefficient").iloc[::-1],
+        table[table["pushes"] == "legitimate"].nsmallest(top_n, "coefficient"),
+        value_column="coefficient",
+        label_column="feature",
+        xlabel="LinearSVC coefficient",
+        filename="top_features",
+        titles=("Pushes toward FRAUDULENT", "Pushes toward LEGITIMATE"),
+        max_label=24,
+    )
 
 
 def run_evaluation() -> pd.DataFrame:

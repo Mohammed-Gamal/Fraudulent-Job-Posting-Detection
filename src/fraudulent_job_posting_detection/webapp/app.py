@@ -20,16 +20,26 @@ import logging
 
 import pandas as pd
 from flask import (
-    Flask, flash, jsonify, redirect, render_template,
-    request, send_from_directory, url_for,
+    Flask,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_from_directory,
+    url_for,
 )
 
 from .. import config
 from ..data import DatasetError, class_balance, load_raw, missingness
 from ..explore import EDA_FIGURES
 from ..models import (
-    ALL_METRICS, IMBALANCE_STRATEGIES, UI_FIGURES,
-    candidate_models, load_ui_model, train_and_evaluate,
+    ALL_METRICS,
+    IMBALANCE_STRATEGIES,
+    UI_FIGURES,
+    candidate_models,
+    load_ui_model,
+    train_and_evaluate,
 )
 from ..predict import corpus_options, predict_posting
 from ..preprocess import CORPUS_PATH, DEFAULT_OPTIONS, read_corpus_meta, run_preprocess

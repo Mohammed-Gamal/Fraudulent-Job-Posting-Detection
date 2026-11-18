@@ -78,6 +78,20 @@ def build_features(
     return ColumnTransformer(blocks, sparse_threshold=1.0)
 
 
+def linear_svc(balanced: bool) -> LinearSVC:
+    """The tuned LinearSVC used as the default model throughout.
+
+    max_iter is far above the default because liblinear does not converge on
+    this feature matrix at 1,000 iterations.
+    """
+    return LinearSVC(
+        class_weight="balanced" if balanced else None,
+        random_state=config.RANDOM_STATE,
+        dual="auto",
+        max_iter=20_000,
+    )
+
+
 def candidate_models(balanced: bool = True) -> dict[str, object]:
     """The four classifiers compared in the report.
 
@@ -91,10 +105,7 @@ def candidate_models(balanced: bool = True) -> dict[str, object]:
         "LogisticRegression": LogisticRegression(
             max_iter=2000, class_weight=weight, random_state=config.RANDOM_STATE
         ),
-        "LinearSVC": LinearSVC(
-            class_weight=weight, random_state=config.RANDOM_STATE,
-            dual="auto", max_iter=20_000,
-        ),
+        "LinearSVC": linear_svc(balanced),
         "RandomForest": RandomForestClassifier(
             n_estimators=300,
             min_samples_leaf=2,
@@ -109,6 +120,21 @@ def make_pipeline(estimator: object, **feature_kwargs: object) -> Pipeline:
     return Pipeline(
         [("features", build_features(**feature_kwargs)), ("clf", estimator)]
     )
+
+
+def wrap_strategy(estimator: object, strategy: str) -> object:
+    """Attach the chosen imbalance treatment around a bare estimator."""
+    features = build_features()
+    if strategy == "smote":
+        from imblearn.over_sampling import SMOTE
+        from imblearn.pipeline import Pipeline as ImbPipeline
+
+        return ImbPipeline([
+            ("features", features),
+            ("smote", SMOTE(random_state=config.RANDOM_STATE)),
+            ("clf", estimator),
+        ])
+    return Pipeline([("features", features), ("clf", estimator)])
 
 
 def cross_validate_models(
@@ -152,22 +178,6 @@ def cross_validate_models(
     return pd.DataFrame(rows)
 
 
-def majority_baseline(frame: pd.DataFrame, test_idx: np.ndarray) -> pd.DataFrame:
-    """The 'predict legitimate always' baseline, to put accuracy in context."""
-    labels = frame.iloc[test_idx][config.TARGET].to_numpy()
-    return pd.DataFrame(
-        [
-            {
-                "model": "MajorityBaseline (always legitimate)",
-                "accuracy": round(float((labels == 0).mean()), 4),
-                "f1_fraud": 0.0,
-                "precision_fraud": 0.0,
-                "recall_fraud": 0.0,
-            }
-        ]
-    )
-
-
 RESULTS_PATH = config.INTERIM_DIR / "cv_results.csv"
 
 FEATURE_SETS: dict[str, bool] = {
@@ -189,7 +199,7 @@ def run_comparison(only: str | None = None) -> pd.DataFrame:
     Each completed (model, feature set) pair is appended to disk immediately,
     so an interrupted run loses at most the model in flight.
     """
-    from .explore import save_table
+    from .plotting import save_table
     from .splits import train_test_indices
 
     config.ensure_directories()
@@ -223,19 +233,12 @@ def run_comparison(only: str | None = None) -> pd.DataFrame:
 def run_imbalance_comparison() -> pd.DataFrame:
     """Stage 4b: does the imbalance remedy matter, and which one?
 
-    Compares three treatments on the strongest classifier:
-      - nothing: the estimator sees the raw 20:1 ratio
-      - class weighting: errors on the minority class cost proportionally more
-      - SMOTE: synthesise minority examples in feature space
-
-    SMOTE is applied *inside* the pipeline, so it is fitted on the training
-    folds only. Oversampling before cross-validation would place synthetic
-    copies of test examples into training -- a frequent and severe error.
+    Compares no treatment, inverse-frequency class weighting and SMOTE on the
+    strongest classifier. SMOTE is applied inside the pipeline, so it is fitted
+    on the training folds only -- oversampling before cross-validation would
+    place synthetic copies of validation examples into training.
     """
-    from imblearn.over_sampling import SMOTE
-    from imblearn.pipeline import Pipeline as ImbPipeline
-
-    from .explore import save_table
+    from .plotting import save_table
     from .splits import train_test_indices
 
     config.ensure_directories()
@@ -245,24 +248,10 @@ def run_imbalance_comparison() -> pd.DataFrame:
     labels = train[config.TARGET].to_numpy()
     groups = make_group_key(train).to_numpy()
 
-    def svc(balanced: bool) -> LinearSVC:
-        return LinearSVC(
-            class_weight="balanced" if balanced else None,
-            random_state=config.RANDOM_STATE, dual="auto", max_iter=20_000,
-        )
-
-    strategies: dict[str, object] = {
-        "none": Pipeline([("features", build_features()), ("clf", svc(False))]),
-        "class_weight=balanced": Pipeline(
-            [("features", build_features()), ("clf", svc(True))]
-        ),
-        "SMOTE": ImbPipeline(
-            [
-                ("features", build_features()),
-                ("smote", SMOTE(random_state=config.RANDOM_STATE, k_neighbors=5)),
-                ("clf", svc(False)),
-            ]
-        ),
+    strategies = {
+        "none": wrap_strategy(linear_svc(False), "none"),
+        "class_weight=balanced": wrap_strategy(linear_svc(True), "class_weight"),
+        "SMOTE": wrap_strategy(linear_svc(False), "smote"),
     }
 
     rows: list[dict[str, object]] = []
@@ -272,8 +261,7 @@ def run_imbalance_comparison() -> pd.DataFrame:
             scoring=SCORING, n_jobs=1, error_score="raise",
         )
         row: dict[str, object] = {"strategy": name, "model": "LinearSVC"}
-        for metric in SCORING:
-            row[metric] = round(float(scores[f"test_{metric}"].mean()), 4)
+        row.update({m: round(float(scores[f"test_{m}"].mean()), 4) for m in SCORING})
         rows.append(row)
         logger.info("%-22s F1=%.4f  P=%.4f  R=%.4f",
                     name, row["f1_fraud"], row["precision_fraud"], row["recall_fraud"])
@@ -296,21 +284,6 @@ ALL_METRICS: dict[str, str] = {
 }
 
 IMBALANCE_STRATEGIES: tuple[str, ...] = ("none", "class_weight", "smote")
-
-
-def _wrap_strategy(estimator: object, strategy: str) -> object:
-    """Attach the chosen imbalance treatment around a bare estimator."""
-    features = build_features()
-    if strategy == "smote":
-        from imblearn.over_sampling import SMOTE
-        from imblearn.pipeline import Pipeline as ImbPipeline
-
-        return ImbPipeline([
-            ("features", features),
-            ("smote", SMOTE(random_state=config.RANDOM_STATE)),
-            ("clf", estimator),
-        ])
-    return Pipeline([("features", features), ("clf", estimator)])
 
 
 UI_MODEL_PATH = config.MODELS_DIR / "ui_model.joblib"
@@ -377,8 +350,12 @@ def train_and_evaluate(
     `progress` is an optional callable taking (done, total, label).
     """
     from sklearn.metrics import (
-        accuracy_score, average_precision_score, f1_score,
-        precision_score, recall_score, roc_auc_score,
+        accuracy_score,
+        average_precision_score,
+        f1_score,
+        precision_score,
+        recall_score,
+        roc_auc_score,
     )
 
     from .splits import train_test_indices
@@ -387,6 +364,9 @@ def train_and_evaluate(
     train, test = frame.iloc[train_idx], frame.iloc[test_idx]
     y_train = train[config.TARGET].to_numpy()
     y_test = test[config.TARGET].to_numpy()
+
+    def rounded(metric, *args, **kwargs) -> float:
+        return round(float(metric(*args, **kwargs)), 4)
 
     available = candidate_models(balanced=(strategy == "class_weight"))
     rows: list[dict[str, object]] = []
@@ -397,7 +377,7 @@ def train_and_evaluate(
         if progress is not None:
             progress(position - 1, len(model_names), f"training {name}")
         estimator = available[name]
-        pipeline = _wrap_strategy(estimator, strategy)
+        pipeline = wrap_strategy(estimator, strategy)
         pipeline.fit(train, y_train)
 
         predictions = pipeline.predict(test)
@@ -410,12 +390,12 @@ def train_and_evaluate(
         outputs[name] = (scores, predictions)
         rows.append({
             "model": name,
-            "accuracy": round(float(accuracy_score(y_test, predictions)), 4),
-            "precision_fraud": round(float(precision_score(y_test, predictions, zero_division=0)), 4),
-            "recall_fraud": round(float(recall_score(y_test, predictions, zero_division=0)), 4),
-            "f1_fraud": round(float(f1_score(y_test, predictions, zero_division=0)), 4),
-            "avg_precision": round(float(average_precision_score(y_test, scores)), 4),
-            "roc_auc": round(float(roc_auc_score(y_test, scores)), 4),
+            "accuracy": rounded(accuracy_score, y_test, predictions),
+            "precision_fraud": rounded(precision_score, y_test, predictions, zero_division=0),
+            "recall_fraud": rounded(recall_score, y_test, predictions, zero_division=0),
+            "f1_fraud": rounded(f1_score, y_test, predictions, zero_division=0),
+            "avg_precision": rounded(average_precision_score, y_test, scores),
+            "roc_auc": rounded(roc_auc_score, y_test, scores),
         })
         logger.info("%s trained: F1=%.4f", name, rows[-1]["f1_fraud"])
 

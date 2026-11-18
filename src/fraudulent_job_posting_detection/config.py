@@ -52,10 +52,6 @@ CATEGORICAL_FIELDS: list[str] = [
     "function",
 ]
 
-# Free-form location strings; high cardinality, handled separately from the
-# categoricals above because "US, NY, New York" needs parsing to be useful.
-LOCATION_FIELDS: list[str] = ["location", "department", "salary_range"]
-
 # Binary indicator flags already encoded as 0/1 in the source data.
 BINARY_FLAGS: list[str] = [
     "telecommuting",
@@ -81,7 +77,6 @@ EXPECTED_N_COLUMNS = 18
 # Experiment settings
 # --------------------------------------------------------------------------
 RANDOM_STATE = 42
-TEST_SIZE = 0.20
 CV_FOLDS = 5
 
 # The CFPB-style redaction marker. EMSCAD anonymises some entities with
