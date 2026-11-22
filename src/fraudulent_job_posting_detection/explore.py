@@ -16,7 +16,15 @@ import pandas as pd
 
 from . import config
 from .data import class_balance, load_raw, missingness
-from .plotting import PALETTE, save_figure, save_table, two_panel_barh
+from .plotting import (
+    FIGURE_LOCK,
+    FIGURE_STYLE,
+    PALETTE,
+    save_figure,
+    save_table,
+    tidy,
+    two_panel_barh,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,22 +70,27 @@ def text_length_summary(frame: pd.DataFrame) -> pd.DataFrame:
 
 def plot_text_length(frame: pd.DataFrame) -> None:
     words = frame["description"].fillna("").astype(str).str.split().str.len()
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    bins = np.linspace(0, words.quantile(0.99), 60)
-    for label, mask, colour in (
-        ("legitimate", frame[config.TARGET] == 0, PALETTE["legitimate"]),
-        ("fraudulent", frame[config.TARGET] == 1, PALETTE["fraudulent"]),
-    ):
-        ax.hist(
-            words[mask], bins=bins, alpha=0.6, label=label,
-            color=colour, density=True,
-        )
-    ax.set_xlabel("Words in description")
-    ax.set_ylabel("Density")
-    ax.set_title("Description length by class (densities, 99th pct clipped)")
-    ax.legend()
-    ax.spines[["top", "right"]].set_visible(False)
-    save_figure("text_length_description")
+    with FIGURE_LOCK, plt.rc_context(FIGURE_STYLE):
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        upper = float(words.quantile(0.99)) or 1.0
+        bins = np.linspace(0, upper, 60)
+        for label, mask, colour in (
+            ("legitimate", frame[config.TARGET] == 0, PALETTE["legitimate"]),
+            ("fraudulent", frame[config.TARGET] == 1, PALETTE["fraudulent"]),
+        ):
+            subset = words[mask]
+            if subset.empty:
+                continue
+            ax.hist(
+                subset, bins=bins, alpha=0.6, label=label,
+                color=colour, density=True,
+            )
+        ax.set_xlabel("Words in description")
+        ax.set_ylabel("Density")
+        ax.set_title("Description length by class (densities, 99th pct clipped)")
+        ax.legend()
+        tidy(ax)
+        save_figure("text_length_description")
 
 
 # ---------------------------------------------------------------------------
@@ -108,42 +121,61 @@ def fraud_rate_by(frame: pd.DataFrame, column: str, min_count: int = 30) -> pd.D
 
 def plot_binary_flags(frame: pd.DataFrame) -> None:
     baseline = frame[config.TARGET].mean() * 100
-    fig, axes = plt.subplots(1, len(config.BINARY_FLAGS), figsize=(11, 3.6), sharey=True)
-    for ax, flag in zip(axes, config.BINARY_FLAGS, strict=True):
-        rates = frame.groupby(flag)[config.TARGET].mean() * 100
-        # One colour: height already encodes the fraud rate. Colouring the two
-        # bars differently would wrongly suggest they are the two classes.
-        ax.bar([str(i) for i in rates.index], rates.to_numpy(), color="#6C8EBF")
-        for x, value in enumerate(rates.to_numpy()):
-            ax.text(x, value + 0.3, f"{value:.1f}%", ha="center", fontsize=9)
-        ax.axhline(baseline, ls="--", lw=1, color="grey")
-        ax.set_title(flag, fontsize=10)
-        ax.set_xlabel("value")
-        ax.spines[["top", "right"]].set_visible(False)
-    axes[0].set_ylabel("Fraud rate (%)")
-    fig.suptitle(
-        f"Fraud rate by binary flag (dashed = {baseline:.2f}% baseline)", fontsize=11
-    )
-    save_figure("fraud_rate_binary_flags")
+    with FIGURE_LOCK, plt.rc_context(FIGURE_STYLE):
+        fig, axes = plt.subplots(
+            1, len(config.BINARY_FLAGS), figsize=(11, 3.6), sharey=True, squeeze=False
+        )
+        for ax, flag in zip(axes[0], config.BINARY_FLAGS, strict=True):
+            rates = frame.groupby(flag)[config.TARGET].mean() * 100
+            # One colour: height already encodes the fraud rate. Colouring the
+            # two bars differently would wrongly suggest they are the classes.
+            ax.bar([str(i) for i in rates.index], rates.to_numpy(),
+                   color=PALETTE["neutral"])
+            for x, value in enumerate(rates.to_numpy()):
+                ax.text(x, value + 0.3, f"{value:.1f}%", ha="center", fontsize=9)
+            ax.axhline(baseline, ls="--", lw=1, color="grey")
+            ax.set_title(flag, fontsize=10)
+            ax.set_xlabel("value")
+            ax.grid(axis="x", visible=False)
+            tidy(ax)
+        axes[0][0].set_ylabel("Fraud rate (%)")
+        fig.suptitle(
+            f"Fraud rate by binary flag (dashed = {baseline:.2f}% baseline)", fontsize=11
+        )
+        save_figure("fraud_rate_binary_flags")
 
 
 # ---------------------------------------------------------------------------
 # Distinguishing vocabulary
 # ---------------------------------------------------------------------------
 def distinguishing_terms(
-    frame: pd.DataFrame, top_n: int = 25, min_df: int = 20
+    frame: pd.DataFrame,
+    top_n: int = 25,
+    min_df: int = 20,
+    normalise_placeholders: bool = False,
 ) -> pd.DataFrame:
     """Terms most associated with each class by smoothed log-odds ratio.
 
     Uses *document* frequency per class rather than raw counts, so one posting
     repeating a word 40 times cannot dominate. Smoothing (alpha=1) keeps terms
     absent from one class finite.
+
+    `normalise_placeholders` collapses '#EMAIL_<hash>#' to 'emailref' first.
+    It defaults to False because the unnormalised ranking is the evidence for
+    normalising at all: left raw, the top of the fraudulent list is a column
+    of 64-character hashes, each one a single scammer the model would be
+    memorising rather than a pattern it could generalise. The interface
+    exposes the switch so both rankings can be seen side by side.
     """
     from sklearn.feature_extraction.text import CountVectorizer
 
     corpus = (
         frame[config.TEXT_FIELDS].fillna("").astype(str).agg(" ".join, axis=1)
     )
+    if normalise_placeholders:
+        from .preprocess import normalise_redactions
+
+        corpus = corpus.map(normalise_redactions)
     vectoriser = CountVectorizer(
         min_df=min_df, stop_words="english", binary=True, max_features=40_000
     )
@@ -273,28 +305,70 @@ def duplicate_audit(frame: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
-def run_eda() -> None:
+def run_eda(progress: object = None) -> None:
+    """Stage 1 end to end: every table and figure, with progress reported.
+
+    The weights below are rough measurements, not guesses: the vocabulary
+    log-odds pass over 17,880 documents dominates, so giving it an equal share
+    of the bar would park the display at the same number for most of the run.
+    """
+    from .progress import ProgressReporter
+
+    reporter = progress if progress is not None else ProgressReporter()
     config.ensure_directories()
+
+    steps = reporter.weighted({
+        "load": 1.0,
+        "tables": 2.0,
+        "categorical": 1.5,
+        "terms": 4.0,
+        "integrity": 1.5,
+        "figures": 2.0,
+    })
+
+    steps["load"](0.3, "loading the raw dataset")
     frame = load_raw()
+    steps["load"].done(f"loaded {len(frame):,} postings")
 
-    save_table(class_balance(frame), "class_balance")
-    save_table(missingness(frame), "missingness")
-    save_table(missingness_by_class(frame), "missingness_by_class")
-    save_table(text_length_summary(frame), "text_length_summary")
+    basic = {
+        "class_balance": lambda: class_balance(frame),
+        "missingness": lambda: missingness(frame),
+        "missingness_by_class": lambda: missingness_by_class(frame),
+        "text_length_summary": lambda: text_length_summary(frame),
+    }
+    for name, build in steps["tables"].iterate(
+        list(basic.items()), lambda _i, item: f"computing {item[0].replace('_', ' ')}"
+    ):
+        save_table(build(), name)
 
+    columns = config.BINARY_FLAGS + config.CATEGORICAL_FIELDS
     categorical_tables = [
         fraud_rate_by(frame, column)
-        for column in config.BINARY_FLAGS + config.CATEGORICAL_FIELDS
+        for column in steps["categorical"].iterate(
+            columns, lambda _i, column: f"fraud rate by {column}"
+        )
     ]
     save_table(pd.concat(categorical_tables, ignore_index=True), "fraud_rate_by_field")
 
+    steps["terms"](0.1, "ranking distinguishing vocabulary (17,880 documents)")
     terms = distinguishing_terms(frame)
     save_table(terms, "distinguishing_terms")
+    steps["terms"].done("vocabulary ranked")
+
+    steps["integrity"](0.3, "auditing redaction placeholders")
     save_table(redaction_audit(frame), "redaction_audit")
+    steps["integrity"](0.7, "auditing duplicate descriptions")
     save_table(duplicate_audit(frame), "duplicate_audit")
+    steps["integrity"].done("integrity checks complete")
 
+    figures = steps["figures"]
+    figures(0.1, "drawing text length distribution")
     plot_text_length(frame)
+    figures(0.45, "drawing fraud rate by flag")
     plot_binary_flags(frame)
+    figures(0.75, "drawing distinguishing terms")
     plot_distinguishing_terms(terms)
+    figures.done("figures written")
 
+    reporter.done("exploratory analysis complete")
     logger.info("Stage 1 complete.")

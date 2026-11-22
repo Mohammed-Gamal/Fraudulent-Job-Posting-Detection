@@ -1,7 +1,14 @@
-"""Command-line entry point. Each pipeline stage is a subcommand.
+"""Command-line entry point.
 
-Running stages through one CLI keeps the project reproducible: the report can
-cite the exact command that produced each figure and table.
+This used to carry a subcommand per pipeline stage, which meant the project
+had two surfaces doing the same work: a web interface that could clean and
+train, and a CLI that could additionally cross-validate and evaluate. The
+two drifted, and the numbers that belong in a report were only reachable from
+the terminal.
+
+Every stage now lives in the interface, including the slow report analyses,
+so this file does one job: start it. `check` is kept because confirming the
+dataset parses is useful before the browser is even open.
 """
 
 from __future__ import annotations
@@ -16,35 +23,38 @@ def _configure_logging(verbose: bool) -> None:
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(levelname)-8s %(name)s: %(message)s",
     )
+    # matplotlib's font manager logs a line per glyph lookup at DEBUG.
+    logging.getLogger("matplotlib").setLevel(logging.INFO)
+    logging.getLogger("PIL").setLevel(logging.INFO)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="fjpd",
-        description="Fraudulent job posting detection pipeline.",
+        description=(
+            "Fraudulent job posting detection. Every pipeline stage runs in "
+            "the web interface: start it with `fjpd serve`."
+        ),
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("check", help="verify the raw dataset is present and valid")
-    subparsers.add_parser("explore", help="stage 1: exploratory data analysis")
-    subparsers.add_parser("preprocess", help="stage 2: clean text and persist the corpus")
-    subparsers.add_parser("split", help="stage 2: build and audit the leakage-controlled split")
-    compare_parser = subparsers.add_parser(
-        "compare", help="stage 4: cross-validate candidate models (resumable)"
+    serve_parser = subparsers.add_parser(
+        "serve", help="launch the web interface (every stage lives there)"
     )
-    compare_parser.add_argument("--only", help="run a single model by name")
-    subparsers.add_parser("imbalance", help="stage 4b: compare imbalance strategies")
-    subparsers.add_parser("evaluate", help="stage 5: held-out evaluation and interpretability")
-    serve_parser = subparsers.add_parser("serve", help="launch the web interface")
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=5000)
     serve_parser.add_argument("--debug", action="store_true")
 
+    subparsers.add_parser("check", help="verify the raw dataset is present and valid")
+
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)
 
-    if args.command == "check":
+    # No subcommand is the common case: start the interface.
+    command = args.command or "serve"
+
+    if command == "check":
         from .data import DatasetError, class_balance, load_raw
 
         try:
@@ -56,59 +66,25 @@ def main(argv: list[str] | None = None) -> int:
         print(class_balance(frame).to_string(index=False))
         return 0
 
-    if args.command == "explore":
-        from .explore import run_eda
-
-        run_eda()
-        return 0
-
-    if args.command == "compare":
-        from .models import run_comparison
-
-        print(run_comparison(only=args.only).to_string(index=False))
-        return 0
-
-    if args.command == "imbalance":
-        from .models import run_imbalance_comparison
-
-        print(run_imbalance_comparison().to_string(index=False))
-        return 0
-
-    if args.command == "serve":
+    if command == "serve":
         from .webapp.app import create_app
 
+        host = getattr(args, "host", "127.0.0.1")
+        port = getattr(args, "port", 5000)
         app = create_app()
-        print(f"\n  Fraud detection UI -> http://{args.host}:{args.port}\n")
-        app.run(host=args.host, port=args.port, debug=args.debug)
+        print(f"\n  Fraud detection interface -> http://{host}:{port}\n")
+        # threaded: the page polls job progress while a worker thread runs,
+        # and fetches each chart separately. Single-threaded, a running job
+        # would block every poll and the bar would never move.
+        app.run(
+            host=host,
+            port=port,
+            debug=getattr(args, "debug", False),
+            threaded=True,
+        )
         return 0
 
-    if args.command == "evaluate":
-        from .evaluate import run_evaluation
-
-        print(run_evaluation().to_string(index=False))
-        return 0
-
-    if args.command == "preprocess":
-        from .preprocess import run_preprocess
-
-        run_preprocess()
-        return 0
-
-    if args.command == "split":
-        import pandas as pd
-
-        from . import config
-        from .splits import audit_split, train_test_indices
-
-        corpus = config.PROCESSED_DIR / "corpus.parquet"
-        if not corpus.exists():
-            print("Run 'fjpd preprocess' first.", file=sys.stderr)
-            return 1
-        frame = pd.read_parquet(corpus)
-        train_idx, test_idx = train_test_indices(frame)
-        print(audit_split(frame, train_idx, test_idx).to_string(index=False))
-        return 0
-
+    parser.print_help()
     return 0
 
 

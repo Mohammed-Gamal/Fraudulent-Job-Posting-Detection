@@ -8,6 +8,7 @@ different columns -- would otherwise surface much later as inexplicable metrics.
 from __future__ import annotations
 
 import logging
+import threading
 
 import pandas as pd
 
@@ -18,6 +19,33 @@ logger = logging.getLogger(__name__)
 
 class DatasetError(RuntimeError):
     """Raised when the raw dataset is missing or does not match expectations."""
+
+
+# --------------------------------------------------------------------------
+# Cache
+# --------------------------------------------------------------------------
+# The raw CSV is ~50 MB and takes a couple of seconds to parse. The web
+# interface asks for it on every render, which made simply navigating the app
+# re-read the whole file each time. Keyed on (size, mtime) so replacing the
+# file -- which is exactly what the upload control does -- invalidates it
+# without any explicit cache-busting call.
+_CACHE_LOCK = threading.Lock()
+_CACHE: dict[str, object] = {"key": None, "frame": None}
+
+
+def _file_key() -> tuple[int, int] | None:
+    try:
+        stat = config.RAW_CSV.stat()
+    except OSError:
+        return None
+    return (stat.st_size, int(stat.st_mtime_ns))
+
+
+def clear_cache() -> None:
+    """Forget the cached dataset. Call after writing a new raw CSV."""
+    with _CACHE_LOCK:
+        _CACHE["key"] = None
+        _CACHE["frame"] = None
 
 
 def _missing_file_message() -> str:
@@ -32,7 +60,9 @@ def _missing_file_message() -> str:
     )
 
 
-def load_raw(validate: bool = True) -> pd.DataFrame:
+def load_raw(
+    validate: bool = True, use_cache: bool = True, copy: bool = True
+) -> pd.DataFrame:
     """Read the raw CSV and optionally assert it matches the expected schema.
 
     Parameters
@@ -40,17 +70,78 @@ def load_raw(validate: bool = True) -> pd.DataFrame:
     validate:
         When True, raise DatasetError if the shape, columns, or target encoding
         differ from the published EMSCAD characteristics.
+    use_cache:
+        Serve a previously parsed copy when the file on disk has not changed.
+    copy:
+        Return a defensive copy, so a caller mutating the frame cannot
+        corrupt what the next caller receives. Pass False only from
+        read-only callers: copying 17,880 rows costs about 90ms, which is
+        most of the cost of an otherwise trivial request.
     """
     if not config.RAW_CSV.exists():
         raise DatasetError(_missing_file_message())
 
-    # keep_default_na with an explicit empty-string sentinel: EMSCAD uses empty
-    # cells for "field not supplied", which is meaningful signal, not corruption.
-    frame = pd.read_csv(config.RAW_CSV, dtype={config.TARGET: "int8"})
+    key = _file_key()
+    if use_cache and key is not None:
+        with _CACHE_LOCK:
+            if _CACHE["key"] == key and _CACHE["frame"] is not None:
+                cached = _CACHE["frame"]
+                return cached.copy() if copy else cached  # type: ignore[union-attr]
+
+    try:
+        # EMSCAD uses empty cells for "field not supplied", which is meaningful
+        # signal rather than corruption, so default NA handling is kept and the
+        # missingness is turned into features later.
+        frame = pd.read_csv(config.RAW_CSV, dtype={config.TARGET: "int8"})
+    except (ValueError, TypeError) as exc:
+        # A wrong file -- or the right file with a non-numeric target column --
+        # fails in the dtype cast. Report that, rather than a pandas traceback.
+        raise DatasetError(
+            f"Could not parse {config.RAW_CSV.name}: {exc}\n\n"
+            f"Expected the EMSCAD CSV with an integer '{config.TARGET}' column."
+        ) from exc
+    except pd.errors.ParserError as exc:
+        raise DatasetError(
+            f"{config.RAW_CSV.name} is not readable as CSV: {exc}"
+        ) from exc
+
     logger.info("Loaded %s rows x %s columns", f"{len(frame):,}", frame.shape[1])
 
     if validate:
         _validate(frame)
+
+    if use_cache and key is not None:
+        with _CACHE_LOCK:
+            _CACHE["key"] = key
+            _CACHE["frame"] = frame
+        return frame.copy() if copy else frame
+    return frame
+
+
+def validate_csv(path) -> pd.DataFrame:
+    """Parse and validate a candidate CSV at an arbitrary path.
+
+    Used to check an upload *before* it replaces the working dataset. The
+    alternative -- pointing the module-level path at the candidate and calling
+    `load_raw` -- mutates shared state that a concurrently running background
+    job may be reading, so a validation in one request could make a training
+    job read the wrong file.
+    """
+    from pathlib import Path
+
+    candidate = Path(path)
+    if not candidate.exists():
+        raise DatasetError(f"No file at {candidate}")
+    try:
+        frame = pd.read_csv(candidate, dtype={config.TARGET: "int8"})
+    except (ValueError, TypeError) as exc:
+        raise DatasetError(
+            f"Could not parse {candidate.name}: {exc}\n\n"
+            f"Expected the EMSCAD CSV with an integer '{config.TARGET}' column."
+        ) from exc
+    except pd.errors.ParserError as exc:
+        raise DatasetError(f"{candidate.name} is not readable as CSV: {exc}") from exc
+    _validate(frame)
     return frame
 
 
@@ -93,14 +184,31 @@ def _validate(frame: pd.DataFrame) -> None:
         )
 
 
+CLASS_LABELS: dict[int, str] = {0: "legitimate (0)", 1: "fraudulent (1)"}
+
+
 def class_balance(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return absolute and relative counts of the target classes."""
-    counts = frame[config.TARGET].value_counts().sort_index()
+    """Absolute and relative counts of the target classes, always two rows.
+
+    Reindexed over both classes rather than over whatever happens to be
+    present. The previous version zipped a fixed two-element label list
+    against `value_counts()`, so a subset or filtered frame containing one
+    class raised a length-mismatch error inside what looks like a read-only
+    summary -- and `balance.loc[1]` then failed for every caller downstream.
+    """
+    counts = (
+        frame[config.TARGET]
+        .value_counts()
+        .reindex(list(CLASS_LABELS), fill_value=0)
+        .sort_index()
+    )
+    total = int(counts.sum())
+    percent = (counts / total * 100).round(2) if total else counts.astype(float)
     return pd.DataFrame(
         {
-            "label": ["legitimate (0)", "fraudulent (1)"],
+            "label": [CLASS_LABELS[int(value)] for value in counts.index],
             "count": counts.to_numpy(),
-            "percent": (counts / counts.sum() * 100).round(2).to_numpy(),
+            "percent": percent.to_numpy(),
         }
     )
 

@@ -111,25 +111,54 @@ def preprocess_document(
     return " ".join(tokenise(cleaned, remove_stopwords=remove_stopwords, stem=stem))
 
 
-def build_corpus(frame: pd.DataFrame, **options: bool) -> pd.DataFrame:
+CHUNK_SIZE = 1_000
+
+
+def build_corpus(
+    frame: pd.DataFrame, progress: object = None, **options: bool
+) -> pd.DataFrame:
     """Add cleaned text columns plus structural features to a copy of `frame`.
 
     Returns a new frame with:
       - 'text_all'      every text field concatenated, cleaned and stemmed
       - missing-value indicators, which Stage 1 showed are predictive
         (company_profile is absent in 67.8% of fraudulent postings)
+
+    Cleaning is the slowest step in the project and the one a user is most
+    likely to be watching, so it runs in chunks and reports after each. That
+    is the only reason for the chunking: the per-document work is identical.
     """
+    from .progress import ProgressReporter
+
+    reporter = progress if progress is not None else ProgressReporter()
     result = frame.copy()
+    n_rows = len(result)
 
     # Clean each field, concatenate into one document, then discard the
     # per-field copies: storing all five again would quintuple the file for
     # no modelling benefit. Per-field experiments can call build_corpus again.
-    cleaned = {}
-    for field in config.TEXT_FIELDS:
+    cleaned: dict[str, pd.Series] = {}
+    fields = config.TEXT_FIELDS
+    per_field = reporter.weighted({field: 1.0 for field in fields})
+
+    for field in fields:
+        source = result[field].fillna("").astype(str)
+        step = per_field[field]
+        pieces: list[pd.Series] = []
+        n_chunks = max(1, -(-n_rows // CHUNK_SIZE))
+        for index in range(n_chunks):
+            start = index * CHUNK_SIZE
+            chunk = source.iloc[start : start + CHUNK_SIZE]
+            pieces.append(
+                chunk.map(lambda text: preprocess_document(text, **options))
+            )
+            step(
+                (index + 1) / n_chunks,
+                f"cleaning {field} ({min(start + CHUNK_SIZE, n_rows):,}/{n_rows:,})",
+            )
         cleaned[field] = (
-            result[field].fillna("").astype(str)
-            .map(lambda text: preprocess_document(text, **options))
-        )
+            pd.concat(pieces) if len(pieces) > 1 else pieces[0]
+        ) if pieces else source
         result[f"{field}_is_missing"] = frame[field].isna().astype("int8")
 
     result["text_all"] = (
@@ -145,7 +174,7 @@ def build_corpus(frame: pd.DataFrame, **options: bool) -> pd.DataFrame:
     result["n_tokens"] = result["text_all"].str.split().str.len()
     logger.info(
         "Built corpus: median %s tokens per posting, vocabulary cache %s stems",
-        int(result["n_tokens"].median()), f"{len(_STEM_CACHE):,}",
+        int(result["n_tokens"].median()) if n_rows else 0, f"{len(_STEM_CACHE):,}",
     )
     return result
 
@@ -176,28 +205,45 @@ def read_corpus_meta() -> dict[str, object] | None:
         return None
 
 
-def run_preprocess(**options: bool) -> pd.DataFrame:
+def run_preprocess(progress: object = None, **options: bool) -> pd.DataFrame:
     """Build and persist the cleaned corpus, recording how it was built."""
     from .data import load_raw
+    from .progress import ProgressReporter
 
+    reporter = progress if progress is not None else ProgressReporter()
     config.ensure_directories()
-    settings = {**DEFAULT_OPTIONS, **options}
-    frame = load_raw()
-    processed = build_corpus(frame, **settings)
+    settings = {key: bool(value) for key, value in {**DEFAULT_OPTIONS, **options}.items()
+                if key in DEFAULT_OPTIONS}
 
-    processed.to_parquet(CORPUS_PATH, index=False)
+    stages = reporter.weighted({"load": 1.0, "clean": 8.0, "write": 1.0})
+    stages["load"](0.1, "reading the raw dataset")
+    frame = load_raw()
+    stages["load"].done(f"loaded {len(frame):,} postings")
+
+    processed = build_corpus(frame, progress=stages["clean"], **settings)
+
+    stages["write"](0.2, "writing corpus.parquet")
+    # Write to a temporary file and move into place: a crash mid-write would
+    # otherwise leave a truncated parquet that every later step fails to read.
+    temporary = CORPUS_PATH.with_suffix(".parquet.tmp")
+    processed.to_parquet(temporary, index=False)
+    temporary.replace(CORPUS_PATH)
+
     CORPUS_META_PATH.write_text(
         json.dumps(
             {
                 "options": settings,
                 "built_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
                 "rows": int(len(processed)),
-                "median_tokens": int(processed["n_tokens"].median()),
+                "median_tokens": int(processed["n_tokens"].median()) if len(processed) else 0,
+                "vocabulary_stems": len(_STEM_CACHE),
             },
             indent=2,
         ),
         encoding="utf-8",
     )
+    stages["write"].done("corpus written")
+    reporter.done("corpus ready")
     logger.info("corpus -> %s (options: %s)", CORPUS_PATH.name, settings)
     return processed
 

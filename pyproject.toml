@@ -23,6 +23,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The embedding layer. Optional so the rest of the pipeline installs and runs
+# without a ~250 MB download; every other model works without it.
+embedding = [
+    "torch>=2.2",
+]
 notebook = [
     "jupyterlab>=4.0",
     "ipykernel>=6.29",
@@ -31,6 +36,7 @@ notebook = [
 [dependency-groups]
 dev = [
     "ruff>=0.6",
+    "pytest>=8.0",
 ]
 
 [project.scripts]
@@ -46,3 +52,11 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+markers = [
+    "slow: trains a model end to end; skip with -m 'not slow'",
+]
