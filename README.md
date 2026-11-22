@@ -9,6 +9,8 @@ baseline of 0.000 at 95.2% accuracy. A learned embedding network reaches
 0.768 — second of five models, and the comparison between the two is the most
 interesting thing in the project.
 
+https://github.com/user-attachments/assets/43ce2c6f-7335-4d1a-9bca-2f42eca27cf3
+
 ---
 
 ## Contents
